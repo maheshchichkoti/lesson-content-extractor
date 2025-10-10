@@ -1,0 +1,5 @@
+word,translation,example_sentence,category,difficulty
+yesterday,कल (kal),Yesterday I went to the market with my friend.,corrected_usage,beginner
+went,[went],Yesterday I went to the market with my friend.,corrected_usage,beginner
+market,बाज़ार (bazaar),Yesterday I went to the market with my friend.,corrected_usage,beginner
+friend,[friend],Yesterday I went to the market with my friend.,corrected_usage,beginner

@@ -1,0 +1,5 @@
+word,translation,example_sentence,category,difficulty
+wake,[wake],I wake up at 7 AM.,corrected_usage,beginner
+eat,[eat],I eat bread and eggs.,corrected_usage,beginner
+bread,रोटी (roti),I eat bread and eggs.,corrected_usage,beginner
+eggs,अंडे (ande),I eat bread and eggs.,corrected_usage,beginner

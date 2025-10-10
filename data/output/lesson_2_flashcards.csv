@@ -1,0 +1,5 @@
+word,translation,example_sentence,category,difficulty
+like,[like],I like playing football and listening to music.,corrected_usage,beginner
+playing,[playing],I like playing football and listening to music.,corrected_usage,beginner
+football,फुटबॉल,I like playing football and listening to music.,corrected_usage,beginner
+listening,[listening],I like playing football and listening to music.,corrected_usage,beginner

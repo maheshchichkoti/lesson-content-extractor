@@ -1,0 +1,4 @@
+exercise_id,sentence,option_a,option_b,option_c,option_d,correct_answer,correct_word,difficulty,context_type
+FB_47,Yesterday I _____ to the market with my friend.,went,goes,gone,go,A,went,beginner,correction
+FB_31,We _____ fruits and vegetables.,buyed,buys,bought,buy,C,bought,beginner,correction
+FB_21,Then we _____ dinner.,cooking,cooked,cooks,cook,B,cooked,beginner,correction

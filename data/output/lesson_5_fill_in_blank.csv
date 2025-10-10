@@ -1,0 +1,4 @@
+exercise_id,sentence,option_a,option_b,option_c,option_d,correct_answer,correct_word,difficulty,context_type
+FB_27,Last year I _____ to Delhi.,gone,went,go,goes,B,went,beginner,correction
+FB_29,I _____ there for three days.,stays,staying,stay,stayed,D,stayed,beginner,correction
+FB_25,The hotel was very _____.,comforted,comfortable,comfortably,comfort,B,comfortable,beginner,correction
