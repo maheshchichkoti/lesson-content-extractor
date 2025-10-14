@@ -48,3 +48,5 @@ Thumbs.db
 # data/output/*.csv
 # data/output/*.xlsx
 EOF
+__pycache__/
+*.pyc
