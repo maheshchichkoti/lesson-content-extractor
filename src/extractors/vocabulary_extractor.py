@@ -4,6 +4,7 @@ Vocabulary extraction from lesson transcripts
 """
 
 from typing import List, Dict
+import re
 from src.utils.text_processing import TextProcessor
 
 class VocabularyExtractor:
@@ -32,6 +33,26 @@ class VocabularyExtractor:
                         'priority': 'high'
                     })
                     seen.add(normalized_word.lower())
+        
+        # Extract explicit vocabulary from teacher (NEW)
+        for line in self.text_processor.extract_teacher_utterances(transcript):
+            # Match patterns like "Important vocabulary: word1, word2, word3"
+            vocab_pattern = r'(?:important|key|vocabulary|words?):\s*([^.]+)'
+            match = re.search(vocab_pattern, line, re.IGNORECASE)
+            if match:
+                words_str = match.group(1)
+                # Split by comma or 'and'
+                words = re.split(r',|\band\b', words_str)
+                for word in words:
+                    word = word.strip()
+                    if word and word.lower() not in seen and len(word) > 2:
+                        vocabulary.append({
+                            'word': word,
+                            'context': line,
+                            'category': 'explicit_vocabulary',
+                            'priority': 'high'
+                        })
+                        seen.add(word.lower())
         
         # Extract topic vocabulary
         topic = self.text_processor.identify_lesson_topic(transcript)
