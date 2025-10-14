@@ -3,7 +3,7 @@ Student mistake identification and categorization
 """
 
 from typing import List, Dict
-from utils.text_processing import TextProcessor
+from src.utils.text_processing import TextProcessor
 
 class MistakeExtractor:
     """Identifies and categorizes student errors"""

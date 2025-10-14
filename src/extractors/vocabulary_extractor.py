@@ -4,7 +4,7 @@ Vocabulary extraction from lesson transcripts
 """
 
 from typing import List, Dict
-from utils.text_processing import TextProcessor
+from src.utils.text_processing import TextProcessor
 
 class VocabularyExtractor:
     """Extracts key vocabulary and phrases from lessons"""

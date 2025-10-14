@@ -3,7 +3,7 @@ Useful sentence extraction for practice exercises
 """
 
 from typing import List, Dict
-from utils.text_processing import TextProcessor
+from src.utils.text_processing import TextProcessor
 
 
 class SentenceExtractor:

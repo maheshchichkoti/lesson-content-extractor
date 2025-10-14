@@ -6,7 +6,7 @@ Fill-in-the-blank exercise generator
 import random
 from typing import List, Dict
 
-from utils.gemini_helper import GeminiHelper
+from src.utils.gemini_helper import GeminiHelper
 
 class FillInBlankGenerator:
     """Generates fill-in-the-blank exercises"""
