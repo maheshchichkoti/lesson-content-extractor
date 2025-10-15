@@ -1,14 +1,19 @@
 """Production-ready FastAPI application for lesson content extraction"""
 
+import os
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
-from typing import List, Dict
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Optional
 import logging
 from datetime import datetime
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
 from src.main import LessonProcessor
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -38,6 +43,75 @@ app.add_middleware(
 # Initialize processor
 processor = LessonProcessor()
 
+# Supabase Client
+class SupabaseClient:
+    """Client for fetching Zoom transcripts from Supabase"""
+    
+    def __init__(self):
+        self.url = os.getenv('SUPABASE_URL')
+        self.key = os.getenv('SUPABASE_KEY')
+        
+        if not self.url or not self.key:
+            logger.warning("Supabase credentials not found. Zoom integration disabled.")
+            self.client = None
+        else:
+            try:
+                self.client: Client = create_client(self.url, self.key)
+                logger.info("Supabase client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Supabase: {e}")
+                self.client = None
+    
+    def fetch_transcript(self, user_id: str, teacher_id: str, class_id: str, date: str) -> Optional[Dict]:
+        """Fetch transcript from zoom_summaries table"""
+        if not self.client:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Supabase client not initialized. Check credentials."
+            )
+        
+        try:
+            logger.info(f"Fetching transcript: user={user_id}, teacher={teacher_id}, class={class_id}, date={date}")
+            
+            response = (
+                self.client.table('zoom_summaries')
+                .select('*')
+                .eq('user_id', user_id)
+                .eq('teacher_id', teacher_id)
+                .eq('class_id', class_id)
+                .eq('meeting_date', date)
+                .order('processing_completed_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            
+            if not response.data:
+                return None
+            
+            transcript_data = response.data[0]
+            logger.info(f"Transcript found (ID: {transcript_data.get('id')}, length: {transcript_data.get('transcript_length', 0)})")
+            return transcript_data
+            
+        except Exception as e:
+            logger.error(f"Error fetching transcript: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error: {str(e)}"
+            )
+    
+    def health_check(self) -> bool:
+        """Check Supabase connection"""
+        if not self.client:
+            return False
+        try:
+            self.client.table('zoom_summaries').select('id').limit(1).execute()
+            return True
+        except:
+            return False
+
+
+# Initialize Supabase client
+supabase_client = SupabaseClient()
 
 # Request/Response Models
 class TranscriptInput(BaseModel):
@@ -45,7 +119,8 @@ class TranscriptInput(BaseModel):
     transcript: str = Field(..., min_length=10, description="Lesson transcript text")
     lesson_number: int = Field(..., ge=1, description="Lesson number (1-based)")
     
-    @validator('transcript')
+    @field_validator('transcript')
+    @classmethod
     def validate_transcript(cls, v):
         if not v.strip():
             raise ValueError('Transcript cannot be empty or whitespace only')
@@ -55,6 +130,24 @@ class TranscriptInput(BaseModel):
 class MultipleTranscriptsInput(BaseModel):
     """Multiple transcripts input"""
     transcripts: List[TranscriptInput] = Field(..., min_items=1, max_items=10)
+
+
+class ZoomTranscriptInput(BaseModel):
+    """Input for fetching and processing Zoom transcript"""
+    user_id: str = Field(..., description="User identifier")
+    teacher_id: str = Field(..., description="Teacher identifier")
+    class_id: str = Field(..., description="Class identifier")
+    date: str = Field(..., description="Date in YYYY-MM-DD format", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    lesson_number: Optional[int] = Field(1, ge=1, description="Lesson number (defaults to 1)")
+    
+    @field_validator('date')
+    @classmethod
+    def validate_date(cls, v):
+        try:
+            datetime.strptime(v, '%Y-%m-%d')
+            return v
+        except ValueError:
+            raise ValueError('Date must be in YYYY-MM-DD format')
 
 
 class LessonExercises(BaseModel):
@@ -72,6 +165,16 @@ class ProcessingResponse(BaseModel):
     success: bool
     message: str
     lessons: List[LessonExercises]
+    processing_time_seconds: float
+    timestamp: str
+
+
+class ZoomProcessingResponse(BaseModel):
+    """Response for Zoom transcript processing"""
+    success: bool
+    message: str
+    lesson: Optional[LessonExercises]
+    zoom_metadata: Optional[Dict]
     processing_time_seconds: float
     timestamp: str
 
@@ -95,7 +198,12 @@ async def root():
         "endpoints": {
             "health": "/health",
             "process_single": "/api/v1/process",
-            "process_multiple": "/api/v1/process/batch"
+            "process_multiple": "/api/v1/process/batch",
+            "process_zoom": "/api/v1/process-zoom-lesson"
+        },
+        "zoom_integration": {
+            "enabled": supabase_client.client is not None,
+            "status": "active" if supabase_client.client else "disabled"
         }
     }
 

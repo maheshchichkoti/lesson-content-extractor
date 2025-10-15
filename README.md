@@ -9,6 +9,7 @@ Automatically transforms raw lesson transcripts into structured learning exercis
   - Fill-in-the-blank with realistic distractors
   - Flashcards with translations and examples
   - Spelling exercises with sample sentences
+- **Zoom Integration**: Fetch transcripts from Supabase and auto-generate exercises
 - **Production-Ready**: Hybrid approach with AI enhancement and rule-based fallback
 - **Quality Assured**: Automated validation ensures zero typos and consistent structure
 
@@ -54,21 +55,45 @@ Or using uvicorn:
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**3. Access the API:**
+**3. Configure Zoom Integration (Optional):**
+
+Add to your `.env` file:
+
+```bash
+SUPABASE_URL=https://bsqwwlffzwesuajuxlxg.supabase.co
+SUPABASE_KEY=your_supabase_key_here
+```
+
+**4. Access the API:**
 
 - **Interactive Docs:** http://localhost:8000/docs
 - **API Endpoint:** http://localhost:8000/api/v1/process
+- **Zoom Endpoint:** http://localhost:8000/api/v1/process-zoom-lesson
 - **Health Check:** http://localhost:8000/health
 
-**4. Test with Postman:**
+**5. Test with Postman:**
+
+**Option A: Direct Transcript Processing**
 
 POST to `http://localhost:8000/api/v1/process`
-
-Request body:
 
 ```json
 {
   "transcript": "Your lesson transcript here...",
+  "lesson_number": 1
+}
+```
+
+**Option B: Zoom Transcript Processing**
+
+POST to `http://localhost:8000/api/v1/process-zoom-lesson`
+
+```json
+{
+  "user_id": "user_123",
+  "teacher_id": "teacher_456",
+  "class_id": "class_789",
+  "date": "2025-05-19",
   "lesson_number": 1
 }
 ```
