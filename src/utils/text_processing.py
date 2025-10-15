@@ -18,7 +18,14 @@ class TextProcessor:
         quotes, and trailing periods.
         """
         corrections: List[Tuple[str, str]] = []
-        lines = transcript.strip().split("\n")
+        
+        # Handle both newline-separated and inline transcripts
+        if '\n' in transcript:
+            lines = transcript.strip().split("\n")
+        else:
+            # Split on Teacher:/Student: markers for inline transcripts
+            lines = re.split(r'(?=(?:Teacher|Student):)', transcript.strip())
+            lines = [l.strip() for l in lines if l.strip()]
 
         for i, line in enumerate(lines):
             if "Teacher:" not in line:
@@ -27,13 +34,16 @@ class TextProcessor:
 
             # patterns – covers quoted and unquoted corrections
             patterns = [
-                r"[Cc]orrect(?:ion)?[:]?\s*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
-                r"The correct sentence is[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
-                r"(?:It\s+)?should\s+be[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
-                r"[Bb]etter[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
-                r"[Cc]areful[!:]?\s*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
-                r"[Aa]lmost[!.]?\s*[Cc]orrect(?:ion)?[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
-                r"[Gg]ood try[!.].*[Tt]he correct.*[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?"
+                # "Correction: I bought..." -> "I bought..."
+                r"[Cc]orrect(?:ion)?[:]?\s+([A-Z][^.!?]+)",
+                # "The correct sentence is: Yesterday I went..." -> "Yesterday I went..."
+                r"The correct sentence is[:\s]+([A-Z][^.!?]+)",
+                # "should be: I am..." -> "I am..."
+                r"(?:It\s+)?should\s+be[:\s]+([A-Z][^.!?]+)",
+                # "Better: My father..." -> "My father..."
+                r"[Bb]etter[:\s]+([A-Z][^.!?]+)",
+                # "Correct: My father is an engineer" -> "My father is an engineer"
+                r"[Cc]orrect[:\s]+([A-Z][^.!?]+)"
             ]
 
             for pat in patterns:
