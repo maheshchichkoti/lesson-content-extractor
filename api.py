@@ -279,6 +279,115 @@ async def process_single_lesson(input_data: TranscriptInput):
         )
 
 
+@app.post("/api/v1/process-zoom-lesson", response_model=ZoomProcessingResponse, tags=["Zoom Integration"])
+async def process_zoom_lesson(input_data: ZoomTranscriptInput):
+    """
+    Fetch Zoom transcript from Supabase and process into exercises
+    
+    **Parameters:**
+    - user_id: User identifier
+    - teacher_id: Teacher identifier  
+    - class_id: Class identifier
+    - date: Meeting date in YYYY-MM-DD format
+    - lesson_number: Optional lesson number (defaults to 1)
+    
+    **Returns:**
+    - Structured exercises (fill-in-blank, flashcards, spelling)
+    - Zoom meeting metadata
+    - Processing metadata
+    """
+    try:
+        start_time = datetime.utcnow()
+        logger.info(
+            f"Processing Zoom lesson: user={input_data.user_id}, "
+            f"teacher={input_data.teacher_id}, class={input_data.class_id}, date={input_data.date}"
+        )
+        
+        # Fetch transcript from Supabase
+        transcript_data = supabase_client.fetch_transcript(
+            user_id=input_data.user_id,
+            teacher_id=input_data.teacher_id,
+            class_id=input_data.class_id,
+            date=input_data.date
+        )
+        
+        if not transcript_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No transcript found for the specified parameters. "
+                       f"Please ensure the Zoom meeting was recorded and processed."
+            )
+        
+        # Extract transcript text
+        transcript_text = transcript_data.get('transcript', '')
+        
+        if not transcript_text or len(transcript_text.strip()) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transcript is empty or too short to process"
+            )
+        
+        logger.info(f"Transcript fetched successfully (length: {len(transcript_text)} chars)")
+        
+        # Process the transcript
+        result = processor.process_lesson(
+            transcript_text,
+            input_data.lesson_number
+        )
+        
+        # Calculate total exercises
+        total = len(result['fill_in_blank']) + len(result['flashcards']) + len(result['spelling'])
+        quality_passed = 8 <= total <= 12
+        
+        # Build lesson exercises
+        lesson_data = LessonExercises(
+            lesson_number=input_data.lesson_number,
+            fill_in_blank=result['fill_in_blank'],
+            flashcards=result['flashcards'],
+            spelling=result['spelling'],
+            total_exercises=total,
+            quality_passed=quality_passed
+        )
+        
+        # Build Zoom metadata
+        zoom_metadata = {
+            "meeting_id": transcript_data.get('meeting_id'),
+            "meeting_topic": transcript_data.get('meeting_topic'),
+            "meeting_date": transcript_data.get('meeting_date'),
+            "meeting_time": transcript_data.get('meeting_time'),
+            "teacher_email": transcript_data.get('teacher_email'),
+            "transcript_source": transcript_data.get('transcript_source'),
+            "transcript_length": transcript_data.get('transcript_length'),
+            "transcription_service": transcript_data.get('transcription_service')
+        }
+        
+        end_time = datetime.utcnow()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        logger.info(
+            f"Zoom lesson processed successfully in {processing_time:.2f}s "
+            f"({total} exercises generated)"
+        )
+        
+        return ZoomProcessingResponse(
+            success=True,
+            message=f"Zoom lesson processed successfully. Generated {total} exercises.",
+            lesson=lesson_data,
+            zoom_metadata=zoom_metadata,
+            processing_time_seconds=round(processing_time, 2),
+            timestamp=end_time.isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing Zoom lesson: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error processing Zoom lesson: {str(e)}"
+        )
+
+
 @app.post("/api/v1/process/batch", response_model=ProcessingResponse, tags=["Processing"])
 async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
     """
