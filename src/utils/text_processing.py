@@ -27,15 +27,13 @@ class TextProcessor:
 
             # patterns – covers quoted and unquoted corrections
             patterns = [
-                r"[Cc]orrect(?:ion)?[:]?['\"\s]+([^\"']+?)['\"]?$",
-                r"[Cc]orrect(?:ion)?:\s*([^.]+)\.?$",
-                r"[Cc]orrect(?:\s+form)?:\s*[\"']?([^\"']+?)['\"]?$",
-                r"(?:It\s+)?should\s+be:?\s*[\"']?([^\"']+?)['\"]?$",
-                r"[Bb]etter:?\s*[\"']?([^\"']+?)['\"]?$",
-                r"The correct sentence is\s*[\"']?([^\"']+?)['\"]?$",
-                r"[Cc]areful[!:]?\s*[\"']?([^\"']+?)['\"]?$",
-                r"[Aa]lmost right\.?\s*[Cc]orrect:?\s*[\"']?([^\"']+?)['\"]?$",
-                r"[Gg]ood try!.*[\"']([^\"']+)['\"]"
+                r"[Cc]orrect(?:ion)?[:]?\s*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
+                r"The correct sentence is[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
+                r"(?:It\s+)?should\s+be[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
+                r"[Bb]etter[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
+                r"[Cc]areful[!:]?\s*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
+                r"[Aa]lmost[!.]?\s*[Cc]orrect(?:ion)?[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?",
+                r"[Gg]ood try[!.].*[Tt]he correct.*[:\s]*['\"]?([^\"'.!?]+)['\"]?[.!?]?"
             ]
 
             for pat in patterns:
