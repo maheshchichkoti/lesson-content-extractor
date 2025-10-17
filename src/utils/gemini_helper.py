@@ -1,20 +1,44 @@
-# src/utils/gemini_helper.py (FIXED)
-"""
-Gemini API integration with fallback mechanisms
-Production-ready with error handling and rate limiting
-"""
+# src/utils/gemini_helper.py
+"""Google Gemini AI integration for R&D on transcripts
+Production-ready with error handling and rate limiting"""
 
 import os
 from typing import List
+import logging
+
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 class GeminiHelper:
-    """Wrapper for Gemini API with production safeguards"""
+    """Wrapper for Google Gemini API with production safeguards"""
     
     def __init__(self):
-        # For this submission, we'll use rule-based approach
-        # Can be enhanced with actual API later
-        self.enabled = False
-        print("   ℹ️  Using rule-based generation (no API key required)")
+        self.api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+        
+        if self.api_key and GENAI_AVAILABLE:
+            try:
+                genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel('gemini-pro')
+                self.enabled = True
+                print("✅ Google Gemini AI initialized successfully")
+                logger.info("✅ Gemini AI enabled for R&D")
+            except Exception as e:
+                print(f"⚠️ Gemini AI initialization failed: {e}. Using fallback.")
+                logger.warning(f"Gemini init failed: {e}")
+                self.enabled = False
+                self.model = None
+        else:
+            if not GENAI_AVAILABLE:
+                print("⚠️ google-generativeai package not installed. Using rule-based fallback.")
+            else:
+                print("⚠️ GOOGLE_API_KEY not found. Using rule-based fallback.")
+            self.enabled = False
+            self.model = None
     
     def generate_distractors(self, correct_word: str, context: str, count: int = 3) -> List[str]:
         """Generate realistic distractor options for fill-in-blank"""

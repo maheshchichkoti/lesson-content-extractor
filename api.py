@@ -1,15 +1,20 @@
 """Production-ready FastAPI application for lesson content extraction"""
 
 import os
-from fastapi import FastAPI, HTTPException, status
+import re
+import time
+from threading import Thread
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import requests
+import assemblyai as aai
 
 from src.main import LessonProcessor
 
@@ -112,6 +117,264 @@ class SupabaseClient:
 
 # Initialize Supabase client
 supabase_client = SupabaseClient()
+
+# Zoom API Configuration
+ZOOM_API_BASE = "https://api.zoom.us/v2"
+ZOOM_ACCESS_TOKEN = os.getenv("ZOOM_ACCESS_TOKEN", "")
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+
+# Initialize AssemblyAI
+if ASSEMBLYAI_API_KEY:
+    aai.settings.api_key = ASSEMBLYAI_API_KEY
+
+
+# Zoom Helper Functions
+def validate_time(time_str: str) -> Optional[str]:
+    """Validate and format time string to HH:MM format."""
+    if not time_str:
+        return None
+    match = re.match(r'^([01]?[0-9]|2[0-3]):([0-5][0-9])$', time_str)
+    if match:
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        return f"{hours:02d}:{minutes:02d}"
+    raise ValueError(f"Invalid time format: {time_str}. Use HH:MM format.")
+
+
+def get_utc_time_from_iso(iso_string: str) -> Optional[str]:
+    """Extract UTC time from ISO string."""
+    try:
+        dt = datetime.fromisoformat(iso_string.replace('Z', '+00:00'))
+        return f"{dt.hour:02d}:{dt.minute:02d}"
+    except Exception as e:
+        logger.error(f"Time parsing error: {e}")
+        return None
+
+
+def time_to_minutes(time_str: str) -> Optional[int]:
+    """Convert HH:MM to total minutes."""
+    if not time_str:
+        return None
+    hours, minutes = map(int, time_str.split(':'))
+    return hours * 60 + minutes
+
+
+def is_time_in_range(meeting_time: str, start_time: Optional[str], end_time: Optional[str]) -> bool:
+    """Check if meeting time falls within the specified range."""
+    if not start_time or not end_time:
+        return True
+    
+    meeting_time_str = get_utc_time_from_iso(meeting_time)
+    if not meeting_time_str:
+        return False
+    
+    meeting_minutes = time_to_minutes(meeting_time_str)
+    start_minutes = time_to_minutes(start_time)
+    end_minutes = time_to_minutes(end_time)
+    
+    if None in (meeting_minutes, start_minutes, end_minutes):
+        return False
+    
+    if end_minutes < start_minutes:
+        return meeting_minutes >= start_minutes or meeting_minutes < end_minutes
+    else:
+        return start_minutes <= meeting_minutes < end_minutes
+
+
+def has_audio_transcript(recording_files: List[Dict]) -> Optional[Dict]:
+    """Check for audio transcript files."""
+    if not recording_files:
+        return None
+    
+    for file in recording_files:
+        rec_type = (file.get('recording_type') or '').lower()
+        file_type = (file.get('file_type') or '').lower()
+        
+        if 'audio_transcript' in rec_type or 'transcript' in rec_type:
+            return file
+        if file_type in ['vtt', 'txt']:
+            return file
+    return None
+
+
+def has_audio_files(recording_files: List[Dict]) -> Optional[Dict]:
+    """Check for audio files."""
+    if not recording_files:
+        return None
+    
+    for file in recording_files:
+        rec_type = file.get('recording_type', '')
+        file_type = (file.get('file_type') or '').lower()
+        file_size = file.get('file_size', 0)
+        
+        if rec_type == 'audio_only':
+            return file
+        if file_type in ['m4a', 'mp3', 'wav', 'aac', 'ogg']:
+            return file
+        if rec_type in ['audio_interpretation', 'shared_screen_with_speaker_view']:
+            if file_size < 100 * 1024 * 1024:
+                return file
+    return None
+
+
+def clean_vtt_transcript(content: str) -> str:
+    """Clean VTT transcript format."""
+    if 'WEBVTT' not in content and '-->' not in content:
+        return content
+    
+    lines = content.split('\n')
+    text_lines = []
+    
+    for line in lines:
+        trimmed = line.strip()
+        if (trimmed and 
+            not trimmed.startswith('WEBVTT') and 
+            '-->' not in trimmed and 
+            not trimmed.isdigit() and
+            not trimmed.startswith('NOTE') and
+            not trimmed.startswith('Kind:') and
+            not trimmed.startswith('Language:')):
+            text_lines.append(trimmed)
+    
+    return ' '.join(text_lines).strip()
+
+
+def fetch_zoom_recordings(teacher_email: str, date: str) -> Dict:
+    """Fetch Zoom recordings for a specific teacher and date."""
+    if not ZOOM_ACCESS_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ZOOM_ACCESS_TOKEN not configured. Please set it in .env file."
+        )
+    
+    url = f"{ZOOM_API_BASE}/users/{teacher_email}/recordings"
+    params = {'from': date, 'to': date}
+    headers = {'Authorization': f'Bearer {ZOOM_ACCESS_TOKEN}'}
+    
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Zoom API error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch Zoom recordings: {str(e)}"
+        )
+
+
+def download_zoom_file(download_url: str, response_format: str = 'text'):
+    """Download file from Zoom."""
+    if not ZOOM_ACCESS_TOKEN:
+        raise ValueError("ZOOM_ACCESS_TOKEN not configured")
+    
+    headers = {
+        'Authorization': f'Bearer {ZOOM_ACCESS_TOKEN}',
+        'User-Agent': 'lesson-content-extractor/1.0'
+    }
+    
+    response = requests.get(download_url, headers=headers, timeout=300)
+    response.raise_for_status()
+    
+    return response.text if response_format == 'text' else response.content
+
+
+def process_recording_background(recording: Dict, user_params: Dict):
+    """Background task to process a single recording."""
+    try:
+        logger.info(f"📄 Processing recording: {recording['meeting_id']}")
+        
+        # Download transcript or audio
+        if recording['processing_type'] == 'TRANSCRIPT_DOWNLOAD':
+            transcript_content = download_zoom_file(
+                recording['target_file']['download_url'], 
+                response_format='text'
+            )
+            clean_transcript = clean_vtt_transcript(transcript_content)
+            
+            if len(clean_transcript) < 10:
+                clean_transcript = f"Error: Transcript appears empty.\n\nRaw: {transcript_content}"
+            
+            meeting_date = datetime.fromisoformat(
+                recording['start_time'].replace('Z', '+00:00')
+            ).strftime('%Y-%m-%d')
+            
+            result = {
+                **recording,
+                **user_params,
+                'meeting_date': meeting_date,
+                'transcript': clean_transcript,
+                'transcript_length': len(clean_transcript),
+                'transcription_source': 'zoom_native_transcript',
+                'processing_mode': 'transcript_download',
+                'transcription_status': 'completed',
+                'transcription_completed_at': datetime.now(timezone.utc).isoformat()
+            }
+        else:
+            # Audio transcription with AssemblyAI
+            if not ASSEMBLYAI_API_KEY:
+                raise ValueError("ASSEMBLYAI_API_KEY not configured")
+            
+            logger.info(f"🎵 Transcribing audio for {recording['meeting_id']}")
+            audio_content = download_zoom_file(
+                recording['target_file']['download_url'], 
+                response_format='binary'
+            )
+            
+            audio_size_mb = len(audio_content) / (1024 * 1024)
+            
+            config = aai.TranscriptionConfig(speaker_labels=True, language_code="en")
+            transcriber = aai.Transcriber()
+            transcript = transcriber.transcribe(audio_content, config=config)
+            
+            if transcript.status == aai.TranscriptStatus.error:
+                raise Exception(f"AssemblyAI failed: {transcript.error}")
+            
+            meeting_date = datetime.fromisoformat(
+                recording['start_time'].replace('Z', '+00:00')
+            ).strftime('%Y-%m-%d')
+            
+            formatted_transcript = f"# Meeting Transcript\n\n{transcript.text}"
+            
+            result = {
+                **recording,
+                **user_params,
+                'meeting_date': meeting_date,
+                'transcript': formatted_transcript,
+                'transcript_length': len(formatted_transcript),
+                'transcription_source': 'assemblyai',
+                'processing_mode': 'audio_transcription',
+                'transcription_status': 'completed',
+                'audio_file_size_mb': audio_size_mb,
+                'transcription_completed_at': datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Store in Supabase
+        if supabase_client.client:
+            supabase_data = {
+                'user_id': result.get('user_id'),
+                'teacher_id': result.get('teacher_id'),
+                'class_id': result.get('class_id'),
+                'teacher_email': result.get('teacher_email'),
+                'meeting_id': result['meeting_id'],
+                'meeting_topic': result.get('topic'),
+                'meeting_date': result['meeting_date'],
+                'meeting_time': result.get('meeting_time'),
+                'transcript': result['transcript'],
+                'transcript_length': result['transcript_length'],
+                'transcript_source': result['transcription_source'],
+                'transcription_status': result['transcription_status'],
+                'processing_mode': result['processing_mode'],
+                'transcription_service': 'Zoom' if result['transcription_source'] == 'zoom_native_transcript' else 'AssemblyAI',
+                'processing_completed_at': datetime.now(timezone.utc).isoformat()
+            }
+            
+            response = supabase_client.client.table('zoom_summaries').insert(supabase_data).execute()
+            logger.info(f"✅ Stored in Supabase: {response.data[0].get('id') if response.data else 'unknown'}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing recording {recording.get('meeting_id')}: {e}")
+
 
 # Request/Response Models
 class TranscriptInput(BaseModel):
@@ -329,6 +592,11 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
         
         logger.info(f"Transcript fetched successfully (length: {len(transcript_text)} chars)")
         
+        # Truncate very long transcripts to prevent timeout
+        if len(transcript_text) > 5000:
+            logger.warning(f"Transcript too long ({len(transcript_text)} chars), truncating to 3000 chars")
+            transcript_text = transcript_text[:3000] + "..."
+        
         # Process the transcript
         result = processor.process_lesson(
             transcript_text,
@@ -385,6 +653,207 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing Zoom lesson: {str(e)}"
+        )
+
+
+@app.get("/api/v1/get-transcript", tags=["Zoom Integration"])
+async def get_transcript(
+    user_id: str,
+    teacher_id: str,
+    class_id: str,
+    date: str
+):
+    """
+    Get raw transcript from Supabase without processing
+    
+    **Parameters:**
+    - user_id: User identifier
+    - teacher_id: Teacher identifier
+    - class_id: Class identifier
+    - date: Meeting date in YYYY-MM-DD format
+    
+    **Returns:**
+    - Raw transcript data from Supabase
+    """
+    try:
+        logger.info(f"Fetching transcript: user={user_id}, teacher={teacher_id}, class={class_id}, date={date}")
+        
+        transcript_data = supabase_client.fetch_transcript(
+            user_id=user_id,
+            teacher_id=teacher_id,
+            class_id=class_id,
+            date=date
+        )
+        
+        if not transcript_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No transcript found for the specified parameters."
+            )
+        
+        return {
+            "success": True,
+            "data": transcript_data,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching transcript: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching transcript: {str(e)}"
+        )
+
+
+class ZoomRecordingInput(BaseModel):
+    """Input for fetching Zoom recordings"""
+    teacher_email: str = Field(..., description="Teacher's Zoom email")
+    user_id: str = Field(..., description="User identifier")
+    teacher_id: str = Field(..., description="Teacher identifier")
+    class_id: str = Field(..., description="Class identifier")
+    date: str = Field(..., description="Date in YYYY-MM-DD format", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    start_time: Optional[str] = Field(None, description="Start time in HH:MM format")
+    end_time: Optional[str] = Field(None, description="End time in HH:MM format")
+
+
+@app.post("/api/v1/fetch-zoom-recordings", tags=["Zoom Integration"])
+async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, background_tasks: BackgroundTasks):
+    """
+    Fetch Zoom recordings and process them in background
+    
+    **Parameters:**
+    - teacher_email: Teacher's Zoom email
+    - user_id: User identifier
+    - teacher_id: Teacher identifier
+    - class_id: Class identifier
+    - date: Meeting date in YYYY-MM-DD format
+    - start_time: Optional start time filter (HH:MM)
+    - end_time: Optional end time filter (HH:MM)
+    
+    **Returns:**
+    - Status of recording fetch and processing
+    """
+    try:
+        logger.info(f"Fetching Zoom recordings for {input_data.teacher_email} on {input_data.date}")
+        
+        # Validate time format
+        formatted_start_time = validate_time(input_data.start_time) if input_data.start_time else None
+        formatted_end_time = validate_time(input_data.end_time) if input_data.end_time else None
+        
+        # Fetch Zoom recordings
+        zoom_data = fetch_zoom_recordings(input_data.teacher_email, input_data.date)
+        meetings = zoom_data.get('meetings', [])
+        
+        logger.info(f"Found {len(meetings)} total meetings")
+        
+        if not meetings:
+            return {
+                "success": False,
+                "message": "No Zoom recordings found for the specified date",
+                "details": {
+                    "teacher_email": input_data.teacher_email,
+                    "date": input_data.date,
+                    "total_meetings": 0
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        # Filter recordings
+        filtered_recordings = []
+        for meeting in meetings:
+            if not meeting.get('recording_files'):
+                continue
+            
+            meeting_date = datetime.fromisoformat(
+                meeting['start_time'].replace('Z', '+00:00')
+            ).strftime('%Y-%m-%d')
+            
+            if input_data.date and meeting_date != input_data.date:
+                continue
+            
+            if not is_time_in_range(meeting['start_time'], formatted_start_time, formatted_end_time):
+                continue
+            
+            transcript_file = has_audio_transcript(meeting['recording_files'])
+            audio_file = has_audio_files(meeting['recording_files'])
+            
+            if transcript_file or audio_file:
+                meeting_time = get_utc_time_from_iso(meeting['start_time'])
+                filtered_recordings.append({
+                    'meeting_id': meeting['id'],
+                    'topic': meeting.get('topic', 'Untitled Meeting'),
+                    'start_time': meeting['start_time'],
+                    'meeting_time': meeting_time,
+                    'processing_type': 'TRANSCRIPT_DOWNLOAD' if transcript_file else 'AUDIO_TRANSCRIPTION',
+                    'target_file': transcript_file or audio_file,
+                    'files': meeting['recording_files']
+                })
+        
+        logger.info(f"Filtered to {len(filtered_recordings)} matching recordings")
+        
+        if not filtered_recordings:
+            return {
+                "success": False,
+                "message": "No audio recordings found for the specified criteria",
+                "details": {
+                    "teacher_email": input_data.teacher_email,
+                    "date": input_data.date,
+                    "time_range": f"{formatted_start_time} - {formatted_end_time}" if formatted_start_time else "No time filter",
+                    "total_meetings": len(meetings),
+                    "filtered_recordings": 0
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        # Process recordings in background
+        user_params = {
+            'teacher_email': input_data.teacher_email,
+            'user_id': input_data.user_id,
+            'teacher_id': input_data.teacher_id,
+            'class_id': input_data.class_id,
+            'formatted_date': input_data.date,
+            'start_time': formatted_start_time,
+            'end_time': formatted_end_time
+        }
+        
+        for recording in filtered_recordings:
+            background_tasks.add_task(process_recording_background, recording, user_params)
+        
+        return {
+            "success": True,
+            "message": "Zoom recordings found, processing started in background",
+            "status": "processing_started",
+            "data": {
+                "recordings_count": len(filtered_recordings),
+                "user_id": input_data.user_id,
+                "teacher_id": input_data.teacher_id,
+                "class_id": input_data.class_id,
+                "teacher_email": input_data.teacher_email,
+                "date": input_data.date,
+                "time_range": f"{formatted_start_time} - {formatted_end_time}" if formatted_start_time else "No time filter",
+                "estimated_processing_time": "2-3 minutes",
+                "recordings": [
+                    {
+                        "meeting_id": r['meeting_id'],
+                        "topic": r['topic'],
+                        "meeting_time": r['meeting_time'],
+                        "processing_type": r['processing_type']
+                    }
+                    for r in filtered_recordings
+                ]
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching Zoom recordings: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching Zoom recordings: {str(e)}"
         )
 
 

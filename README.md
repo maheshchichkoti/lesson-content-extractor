@@ -55,13 +55,23 @@ Or using uvicorn:
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**3. Configure Zoom Integration (Optional):**
+**3. Configure Zoom Integration:**
 
 Add to your `.env` file:
 
 ```bash
+# Supabase (Database)
 SUPABASE_URL=https://bsqwwlffzwesuajuxlxg.supabase.co
 SUPABASE_KEY=your_supabase_key_here
+
+# Zoom API (Get from Amit)
+ZOOM_ACCESS_TOKEN=your_zoom_access_token
+
+# Google Gemini AI (For R&D on transcripts)
+GOOGLE_API_KEY=your_google_gemini_key
+
+# AssemblyAI (For audio transcription)
+ASSEMBLYAI_API_KEY=your_assemblyai_key
 ```
 
 **4. Access the API:**
@@ -100,11 +110,12 @@ POST to `http://localhost:8000/api/v1/process-zoom-lesson`
 
 #### Option 2: Using Script (Command Line)
 
-```bash
+````bash
 # Unix/Mac/Linux
 chmod +x run.sh
 ./run.sh
 
 # Windows
 run.bat
-```
+```lesson_N_fill_in_blank
+````

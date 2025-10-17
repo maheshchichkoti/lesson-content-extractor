@@ -13,3 +13,6 @@ pydantic==2.5.0
 # Database dependencies
 supabase==2.10.0
 requests>=2.31.0
+
+# Zoom integration
+assemblyai>=0.17.0
