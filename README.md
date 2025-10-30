@@ -70,8 +70,8 @@ ZOOM_ACCESS_TOKEN=your_zoom_access_token
 # Google Gemini AI (For R&D on transcripts)
 GOOGLE_API_KEY=your_google_gemini_key
 
-# AssemblyAI (For audio transcription)
-ASSEMBLYAI_API_KEY=your_assemblyai_key
+# Sonix API key (future, for audio transcription)
+SONIX_API_KEY=your_sonix_api_key
 ```
 
 **4. Access the API:**
@@ -110,12 +110,11 @@ POST to `http://localhost:8000/api/v1/process-zoom-lesson`
 
 #### Option 2: Using Script (Command Line)
 
-````bash
+```
 # Unix/Mac/Linux
 chmod +x run.sh
 ./run.sh
 
 # Windows
 run.bat
-```lesson_N_fill_in_blank
-````
+```

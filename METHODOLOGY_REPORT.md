@@ -173,7 +173,6 @@ Pattern 3: r'(?:It )?should be:\s*[""]([^"""]+)[""]'
 Pattern 4: r'Better:\s*[""]([^"""]+)[""]'
 Example Detection:
 
-text
 
 Input: Teacher: Careful! "I eat bread and eggs."
 Detected: Pattern 4 matched

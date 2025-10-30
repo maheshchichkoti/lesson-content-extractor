@@ -10,11 +10,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import requests
-import assemblyai as aai
+# import sonix  # TODO: Add Sonix SDK when ready
 
 from src.main import LessonProcessor
 
@@ -104,6 +104,77 @@ class SupabaseClient:
                 detail=f"Database error: {str(e)}"
             )
     
+    def store_exercises(self, user_id: str, teacher_id: str, class_id: str, 
+                       lesson_number: int, exercises: Dict, zoom_summary_id: Optional[int] = None) -> Dict:
+        """Store generated exercises in lesson_exercises table"""
+        if not self.client:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Supabase client not initialized. Check credentials."
+            )
+        
+        try:
+            # Calculate quality score
+            total_exercises = (
+                len(exercises.get('fill_in_blank', [])) + 
+                len(exercises.get('flashcards', [])) + 
+                len(exercises.get('spelling', []))
+            )
+            
+            exercise_data = {
+                'zoom_summary_id': zoom_summary_id,
+                'user_id': user_id,
+                'teacher_id': teacher_id,
+                'class_id': class_id,
+                'lesson_number': lesson_number,
+                'fill_in_blank': exercises.get('fill_in_blank', []),
+                'flashcards': exercises.get('flashcards', []),
+                'spelling': exercises.get('spelling', []),
+                'quality_score': total_exercises,
+                'generated_at': datetime.now(timezone.utc).isoformat()
+            }
+            
+            response = self.client.table('lesson_exercises').insert(exercise_data).execute()
+            
+            if response.data:
+                logger.info(f"Exercises stored successfully (ID: {response.data[0].get('id')})")
+                return response.data[0]
+            else:
+                raise Exception("No data returned from insert")
+                
+        except Exception as e:
+            logger.error(f"Error storing exercises: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to store exercises: {str(e)}"
+            )
+    
+    def get_exercises(self, class_id: str, user_id: Optional[str] = None) -> List[Dict]:
+        """Retrieve exercises for a class"""
+        if not self.client:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Supabase client not initialized. Check credentials."
+            )
+        
+        try:
+            query = self.client.table('lesson_exercises').select('*').eq('class_id', class_id)
+            
+            if user_id:
+                query = query.eq('user_id', user_id)
+            
+            response = query.order('generated_at', desc=True).execute()
+            
+            logger.info(f"Retrieved {len(response.data)} exercise sets for class {class_id}")
+            return response.data
+            
+        except Exception as e:
+            logger.error(f"Error retrieving exercises: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to retrieve exercises: {str(e)}"
+            )
+    
     def health_check(self) -> bool:
         """Check Supabase connection"""
         if not self.client:
@@ -120,13 +191,74 @@ supabase_client = SupabaseClient()
 
 # Zoom API Configuration
 ZOOM_API_BASE = "https://api.zoom.us/v2"
-ZOOM_ACCESS_TOKEN = os.getenv("ZOOM_ACCESS_TOKEN", "")
-ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 
-# Initialize AssemblyAI
-if ASSEMBLYAI_API_KEY:
-    aai.settings.api_key = ASSEMBLYAI_API_KEY
+# Zoom Token Manager (Auto-refresh)
+class ZoomTokenManager:
+    def __init__(self):
+        self.client_id = os.getenv('ZOOM_CLIENT_ID', '')
+        self.client_secret = os.getenv('ZOOM_CLIENT_SECRET', '')
+        self.access_token = os.getenv('ZOOM_ACCESS_TOKEN', '')
+        self.refresh_token = os.getenv('ZOOM_REFRESH_TOKEN', '')
+        self.token_expires_at = datetime.now(timezone.utc)
+    
+    def get_token(self) -> str:
+        """Get valid access token, auto-refresh if expired"""
+        # If token is still valid, return it
+        if self.access_token and datetime.now(timezone.utc) < self.token_expires_at:
+            return self.access_token
+        
+        # Token expired, refresh it
+        if not self.refresh_token:
+            logger.warning("No refresh token available. Using existing access token.")
+            return self.access_token
+        
+        try:
+            logger.info("🔄 Refreshing Zoom access token...")
+            
+            import base64
+            credentials = f"{self.client_id}:{self.client_secret}"
+            encoded = base64.b64encode(credentials.encode()).decode()
+            
+            response = requests.post(
+                "https://zoom.us/oauth/token",
+                headers={
+                    "Authorization": f"Basic {encoded}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token
+                }
+            )
+            
+            if response.status_code == 200:
+                tokens = response.json()
+                self.access_token = tokens['access_token']
+                self.refresh_token = tokens.get('refresh_token', self.refresh_token)
+                # Set expiry 5 minutes before actual expiry for safety
+                expires_in = tokens.get('expires_in', 3600)
+                self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 300)
+                
+                logger.info(f"✅ Zoom token refreshed successfully (expires in {expires_in}s)")
+                return self.access_token
+            else:
+                logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
+                return self.access_token
+                
+        except Exception as e:
+            logger.error(f"Error refreshing Zoom token: {e}")
+            return self.access_token
 
+# Initialize Zoom token manager
+zoom_token_manager = ZoomTokenManager()
+
+def get_zoom_token() -> str:
+    """Get current valid Zoom access token"""
+    return zoom_token_manager.get_token()
+
+# Sonix API Configuration (for future use)
+SONIX_API_KEY = os.getenv("SONIX_API_KEY", "")
+# TODO: Initialize Sonix client when ready
 
 # Zoom Helper Functions
 def validate_time(time_str: str) -> Optional[str]:
@@ -241,7 +373,8 @@ def clean_vtt_transcript(content: str) -> str:
 
 def fetch_zoom_recordings(teacher_email: str, date: str) -> Dict:
     """Fetch Zoom recordings for a specific teacher and date."""
-    if not ZOOM_ACCESS_TOKEN:
+    token = get_zoom_token()
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="ZOOM_ACCESS_TOKEN not configured. Please set it in .env file."
@@ -249,7 +382,7 @@ def fetch_zoom_recordings(teacher_email: str, date: str) -> Dict:
     
     url = f"{ZOOM_API_BASE}/users/{teacher_email}/recordings"
     params = {'from': date, 'to': date}
-    headers = {'Authorization': f'Bearer {ZOOM_ACCESS_TOKEN}'}
+    headers = {'Authorization': f'Bearer {token}'}
     
     try:
         response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -265,11 +398,12 @@ def fetch_zoom_recordings(teacher_email: str, date: str) -> Dict:
 
 def download_zoom_file(download_url: str, response_format: str = 'text'):
     """Download file from Zoom."""
-    if not ZOOM_ACCESS_TOKEN:
+    token = get_zoom_token()
+    if not token:
         raise ValueError("ZOOM_ACCESS_TOKEN not configured")
     
     headers = {
-        'Authorization': f'Bearer {ZOOM_ACCESS_TOKEN}',
+        'Authorization': f'Bearer {token}',
         'User-Agent': 'lesson-content-extractor/1.0'
     }
     
@@ -284,7 +418,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
     try:
         logger.info(f"📄 Processing recording: {recording['meeting_id']}")
         
-        # Download transcript or audio
+        # Download transcript from Zoom
         if recording['processing_type'] == 'TRANSCRIPT_DOWNLOAD':
             transcript_content = download_zoom_file(
                 recording['target_file']['download_url'], 
@@ -311,43 +445,10 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 'transcription_completed_at': datetime.now(timezone.utc).isoformat()
             }
         else:
-            # Audio transcription with AssemblyAI
-            if not ASSEMBLYAI_API_KEY:
-                raise ValueError("ASSEMBLYAI_API_KEY not configured")
-            
-            logger.info(f"🎵 Transcribing audio for {recording['meeting_id']}")
-            audio_content = download_zoom_file(
-                recording['target_file']['download_url'], 
-                response_format='binary'
-            )
-            
-            audio_size_mb = len(audio_content) / (1024 * 1024)
-            
-            config = aai.TranscriptionConfig(speaker_labels=True, language_code="en")
-            transcriber = aai.Transcriber()
-            transcript = transcriber.transcribe(audio_content, config=config)
-            
-            if transcript.status == aai.TranscriptStatus.error:
-                raise Exception(f"AssemblyAI failed: {transcript.error}")
-            
-            meeting_date = datetime.fromisoformat(
-                recording['start_time'].replace('Z', '+00:00')
-            ).strftime('%Y-%m-%d')
-            
-            formatted_transcript = f"# Meeting Transcript\n\n{transcript.text}"
-            
-            result = {
-                **recording,
-                **user_params,
-                'meeting_date': meeting_date,
-                'transcript': formatted_transcript,
-                'transcript_length': len(formatted_transcript),
-                'transcription_source': 'assemblyai',
-                'processing_mode': 'audio_transcription',
-                'transcription_status': 'completed',
-                'audio_file_size_mb': audio_size_mb,
-                'transcription_completed_at': datetime.now(timezone.utc).isoformat()
-            }
+            # TODO: Audio transcription with Sonix (future implementation)
+            # For now, skip audio-only recordings
+            logger.warning(f"⚠️ Audio-only recording skipped (Sonix not yet implemented): {recording['meeting_id']}")
+            return
         
         # Store in Supabase
         if supabase_client.client:
@@ -854,6 +955,53 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching Zoom recordings: {str(e)}"
+        )
+
+
+@app.get("/api/v1/exercises", tags=["Integration"])
+async def get_exercises(
+    class_id: str,
+    user_id: Optional[str] = None
+):
+    """
+    Get exercises for a class (for backend team to import)
+    
+    **Parameters:**
+    - class_id: Class identifier (required)
+    - user_id: User identifier (optional filter)
+    
+    **Returns:**
+    - List of exercise sets with flashcards, fill-in-blank, and spelling
+    """
+    try:
+        logger.info(f"Retrieving exercises: class={class_id}, user={user_id}")
+        
+        exercises = supabase_client.get_exercises(class_id=class_id, user_id=user_id)
+        
+        if not exercises:
+            return {
+                "success": True,
+                "message": "No exercises found for the specified class",
+                "data": [],
+                "count": 0,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        return {
+            "success": True,
+            "message": f"Retrieved {len(exercises)} exercise set(s)",
+            "data": exercises,
+            "count": len(exercises),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving exercises: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving exercises: {str(e)}"
         )
 
 
