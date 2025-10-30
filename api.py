@@ -708,6 +708,18 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
         total = len(result['fill_in_blank']) + len(result['flashcards']) + len(result['spelling'])
         quality_passed = 8 <= total <= 12
         
+        # Store exercises in Supabase
+        stored_result = supabase_client.store_exercises(
+            user_id=input_data.user_id,
+            teacher_id=input_data.teacher_id,
+            class_id=input_data.class_id,
+            lesson_number=input_data.lesson_number,
+            exercises=result,
+            zoom_summary_id=transcript_data.get('id')
+        )
+        
+        logger.info(f"Exercises stored in Supabase (ID: {stored_result.get('id')})")
+        
         # Build lesson exercises
         lesson_data = LessonExercises(
             lesson_number=input_data.lesson_number,
