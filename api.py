@@ -1,3 +1,4 @@
+
 """Production-ready FastAPI application for lesson content extraction"""
 
 import os
@@ -14,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import requests
-# import sonix  # TODO: Add Sonix SDK when ready
+import assemblyai as aai
 
 from src.main import LessonProcessor
 
@@ -256,10 +257,16 @@ def get_zoom_token() -> str:
     """Get current valid Zoom access token"""
     return zoom_token_manager.get_token()
 
-# Sonix API Configuration (for future use)
-SONIX_API_KEY = os.getenv("SONIX_API_KEY", "")
-# TODO: Initialize Sonix client when ready
+# AssemblyAI Configuration
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+ASSEMBLYAI_BASE_URL = os.getenv("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.com/v2")
 
+if ASSEMBLYAI_API_KEY:
+    aai.settings.api_key = ASSEMBLYAI_API_KEY
+    logger.info("✅ AssemblyAI initialized successfully")
+else:
+    logger.warning("⚠️ ASSEMBLYAI_API_KEY not found. Audio transcription will be disabled.")
+    
 # Zoom Helper Functions
 def validate_time(time_str: str) -> Optional[str]:
     """Validate and format time string to HH:MM format."""
@@ -412,7 +419,46 @@ def download_zoom_file(download_url: str, response_format: str = 'text'):
     
     return response.text if response_format == 'text' else response.content
 
+def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
+    """Transcribe audio file using AssemblyAI."""
+    if not ASSEMBLYAI_API_KEY:
+        raise ValueError("ASSEMBLYAI_API_KEY not configured")
+    
+    try:
+        logger.info("🎙️ Starting AssemblyAI transcription...")
+        
+        # Configure transcription settings
+        config = aai.TranscriptionConfig(
+            language_code="en",  # Change if needed
+            punctuate=True,
+            format_text=True,
+            speaker_labels=True  # Enable speaker diarization for Teacher/Student labels
+        )
+        
+        transcriber = aai.Transcriber(config=config)
+        
+        # Transcribe from URL (AssemblyAI will download the file)
+        transcript = transcriber.transcribe(audio_url)
+        
+        # Wait for transcription to complete
+        if transcript.status == aai.TranscriptStatus.error:
+            raise Exception(f"Transcription failed: {transcript.error}")
+        
+        logger.info(f"✅ Transcription completed ({len(transcript.text)} characters)")
+        
+        return {
+            'text': transcript.text,
+            'status': 'completed',
+            'duration': transcript.audio_duration,  # in seconds
+            'confidence': getattr(transcript, 'confidence', None),
+            'words_count': len(transcript.words) if transcript.words else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ AssemblyAI transcription error: {e}")
+        raise Exception(f"Transcription failed: {str(e)}")
 
+        
 def process_recording_background(recording: Dict, user_params: Dict):
     """Background task to process a single recording."""
     try:
@@ -444,10 +490,59 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 'transcription_status': 'completed',
                 'transcription_completed_at': datetime.now(timezone.utc).isoformat()
             }
+        
+        # Audio transcription with AssemblyAI
+        elif recording['processing_type'] == 'AUDIO_TRANSCRIPTION':
+            if not ASSEMBLYAI_API_KEY:
+                logger.error("❌ AssemblyAI API key not configured")
+                return
+            
+            logger.info(f"🎙️ Starting audio transcription for meeting {recording['meeting_id']}")
+            
+            # Get audio file download URL (with Zoom token)
+            audio_url = recording['target_file']['download_url']
+            
+            # Download audio file first (AssemblyAI needs accessible URL or file upload)
+            audio_content = download_zoom_file(audio_url, response_format='binary')
+            
+            # Save temporarily
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.m4a') as tmp_file:
+                tmp_file.write(audio_content)
+                tmp_audio_path = tmp_file.name
+            
+            try:
+                # Transcribe with AssemblyAI
+                transcription_result = transcribe_audio_with_assemblyai(tmp_audio_path)
+                
+                meeting_date = datetime.fromisoformat(
+                    recording['start_time'].replace('Z', '+00:00')
+                ).strftime('%Y-%m-%d')
+                
+                result = {
+                    **recording,
+                    **user_params,
+                    'meeting_date': meeting_date,
+                    'transcript': transcription_result['text'],
+                    'transcript_length': len(transcription_result['text']),
+                    'transcription_source': 'assemblyai',
+                    'processing_mode': 'audio_transcription',
+                    'transcription_status': transcription_result['status'],
+                    'transcription_confidence': transcription_result.get('confidence'),
+                    'audio_duration_seconds': transcription_result.get('duration'),
+                    'transcription_completed_at': datetime.now(timezone.utc).isoformat()
+                }
+                
+                logger.info(f"✅ Audio transcribed successfully ({len(transcription_result['text'])} chars)")
+                
+            finally:
+                # Clean up temp file
+                import os
+                if os.path.exists(tmp_audio_path):
+                    os.remove(tmp_audio_path)
+        
         else:
-            # TODO: Audio transcription with Sonix (future implementation)
-            # For now, skip audio-only recordings
-            logger.warning(f"⚠️ Audio-only recording skipped (Sonix not yet implemented): {recording['meeting_id']}")
+            logger.warning(f"⚠️ Unknown processing type: {recording.get('processing_type')}")
             return
         
         # Store in Supabase
@@ -467,6 +562,8 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 'transcription_status': result['transcription_status'],
                 'processing_mode': result['processing_mode'],
                 'transcription_service': 'Zoom' if result['transcription_source'] == 'zoom_native_transcript' else 'AssemblyAI',
+                'transcription_confidence': result.get('transcription_confidence'),
+                'audio_duration_seconds': result.get('audio_duration_seconds'),
                 'processing_completed_at': datetime.now(timezone.utc).isoformat()
             }
             
@@ -475,7 +572,6 @@ def process_recording_background(recording: Dict, user_params: Dict):
         
     except Exception as e:
         logger.error(f"❌ Error processing recording {recording.get('meeting_id')}: {e}")
-
 
 # Request/Response Models
 class TranscriptInput(BaseModel):

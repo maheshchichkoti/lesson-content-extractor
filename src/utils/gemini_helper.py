@@ -3,7 +3,7 @@
 Production-ready with error handling and rate limiting"""
 
 import os
-from typing import List
+from typing import List, Dict
 import logging
 
 try:
@@ -187,3 +187,94 @@ class GeminiHelper:
         
         phrase_lower = phrase.lower()
         return translations.get(phrase_lower, f"[{phrase}]")
+    
+    def extract_vocabulary_with_ai(self, transcript: str, max_words: int = 15) -> List[Dict[str, str]]:
+        """Use Gemini AI to extract vocabulary from ANY transcript"""
+        
+        if not self.enabled or not self.model:
+            logger.warning("Gemini AI not available, using fallback")
+            return self._fallback_vocabulary_extraction(transcript, max_words)
+        
+        try:
+            prompt = f"""Analyze this conversation transcript and extract the most important English vocabulary words that would be useful for language learners.
+
+Transcript:
+{transcript[:2000]}
+
+Extract 10-15 useful English words or phrases. For each word, provide:
+1. The word/phrase
+2. A simple example sentence using that word from the transcript (or create one if needed)
+3. Difficulty level (beginner/intermediate/advanced)
+
+Format your response EXACTLY as JSON array:
+[
+  {{"word": "backend", "context": "We need to complete the backend", "difficulty": "intermediate"}},
+  {{"word": "completed", "context": "This task is completed", "difficulty": "beginner"}}
+]
+
+Only return the JSON array, nothing else."""
+            
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+            
+            # Extract JSON from response
+            import json
+            import re
+            
+            # Try to find JSON array in response
+            json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
+            if json_match:
+                vocab_list = json.loads(json_match.group())
+                logger.info(f"✅ Gemini AI extracted {len(vocab_list)} vocabulary words")
+                return vocab_list[:max_words]
+            else:
+                logger.warning("Could not parse Gemini response, using fallback")
+                return self._fallback_vocabulary_extraction(transcript, max_words)
+                
+        except Exception as e:
+            logger.error(f"Gemini AI vocabulary extraction failed: {e}")
+            return self._fallback_vocabulary_extraction(transcript, max_words)
+    
+    def _fallback_vocabulary_extraction(self, transcript: str, max_words: int = 15) -> List[Dict[str, str]]:
+        """Fallback: Extract common English words from transcript"""
+        import re
+        from collections import Counter
+        
+        # Common words to skip
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+                     'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
+                     'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should',
+                     'can', 'could', 'may', 'might', 'this', 'that', 'these', 'those',
+                     'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them',
+                     'my', 'your', 'his', 'her', 'its', 'our', 'their', 'so', 'if', 'as', 'all',
+                     'just', 'like', 'okay', 'ok', 'yeah', 'yes', 'no', 'not', 'now', 'then'}
+        
+        # Extract words
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', transcript.lower())
+        
+        # Filter and count
+        filtered_words = [w for w in words if w not in stop_words]
+        word_counts = Counter(filtered_words)
+        
+        # Get most common
+        vocabulary = []
+        for word, count in word_counts.most_common(max_words):
+            # Find context sentence
+            sentences = re.split(r'[.!?]', transcript)
+            context = ""
+            for sentence in sentences:
+                if word in sentence.lower():
+                    context = sentence.strip()[:100]
+                    break
+            
+            if context:
+                vocabulary.append({
+                    'word': word,
+                    'context': context,
+                    'difficulty': 'intermediate',
+                    'category': 'extracted',
+                    'priority': 'medium'
+                })
+        
+        logger.info(f"✅ Fallback extracted {len(vocabulary)} vocabulary words")
+        return vocabulary

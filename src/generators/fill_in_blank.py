@@ -1,4 +1,4 @@
-# src/generators/fill_in_blank.py (COMPLETE REWRITE)
+# src/generators/fill_in_blank.py
 """
 Fill-in-the-blank exercise generator
 """

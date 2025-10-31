@@ -6,12 +6,14 @@ Vocabulary extraction from lesson transcripts
 from typing import List, Dict
 import re
 from src.utils.text_processing import TextProcessor
+from src.utils.gemini_helper import GeminiHelper
 
 class VocabularyExtractor:
     """Extracts key vocabulary and phrases from lessons"""
     
     def __init__(self):
         self.text_processor = TextProcessor()
+        self.gemini_helper = GeminiHelper()
     
     def extract(self, transcript: str) -> List[Dict[str, str]]:
         """Extract vocabulary items from transcript"""
@@ -85,5 +87,20 @@ class VocabularyExtractor:
                             'priority': 'medium'
                         })
                         seen.add(word.lower())
+        
+        # If no vocabulary found with patterns, use AI extraction
+        if len(vocabulary) == 0:
+            ai_vocab = self.gemini_helper.extract_vocabulary_with_ai(transcript, max_words=12)
+            for item in ai_vocab:
+                word = item.get('word', '')
+                if word and word.lower() not in seen:
+                    vocabulary.append({
+                        'word': word,
+                        'context': item.get('context', ''),
+                        'category': 'ai_extracted',
+                        'priority': 'medium',
+                        'difficulty': item.get('difficulty', 'intermediate')
+                    })
+                    seen.add(word.lower())
         
         return vocabulary

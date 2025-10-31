@@ -70,8 +70,9 @@ ZOOM_ACCESS_TOKEN=your_zoom_access_token
 # Google Gemini AI (For R&D on transcripts)
 GOOGLE_API_KEY=your_google_gemini_key
 
-# Sonix API key (future, for audio transcription)
-SONIX_API_KEY=your_sonix_api_key
+# AssemblyAI (for audio transcription)
+ASSEMBLYAI_API_KEY=your_assemblyai_api_key
+ASSEMBLYAI_BASE_URL=https://api.assemblyai.com/v2
 ```
 
 **4. Access the API:**
