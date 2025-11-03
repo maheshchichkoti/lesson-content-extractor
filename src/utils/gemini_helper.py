@@ -233,74 +233,55 @@ class GeminiHelper:
             return self._fallback_vocabulary_extraction(transcript, max_words)
     
     def _get_detailed_vocab_prompt(self, transcript: str, max_words: int) -> str:
-        """Detailed prompt with context and examples"""
-        return f"""You are an expert ESL (English as a Second Language) teacher analyzing a lesson transcript.
+        """Detailed prompt with explicit formatting guidance"""
+        return f"""Analyze this conversation transcript and extract the most important English vocabulary words that would help an intermediate learner.
 
-Your task: Extract {max_words} vocabulary words that would be MOST beneficial for intermediate English learners to practice.
-
-Consider these factors:
-1. Words used incorrectly by students (high priority)
-2. Key vocabulary for the lesson topic
-3. Words appearing in important contexts
-4. Practical words for daily conversation
-5. Words at appropriate difficulty level
+Instructions:
+1. Identify {max_words} useful English words or phrases (prioritize mistakes, key topics, and practical expressions).
+2. For each item include:
+   - "word": the vocabulary word or phrase
+   - "context": a simple example sentence from the transcript (or create a natural sentence if needed)
+   - "difficulty": "beginner", "intermediate", or "advanced"
 
 Transcript:
 {transcript[:2500]}
 
-Few-shot examples:
-Good extraction:
-- "breakfast" from "I eat breakfast at 8 AM" (common daily routine word)
-- "comfortable" from "The hotel was comfortable" (useful adjective)
-- "yesterday" from "I went shopping yesterday" (time expression)
-
-Bad extraction:
-- "the", "a", "is" (too basic)
-- "subsequently", "nevertheless" (too advanced for intermediate)
-- Random words without context
-
-Format your response EXACTLY as a JSON array:
+Format your response EXACTLY as a JSON array. Example:
 [
-  {{"word": "breakfast", "context": "I eat breakfast at 8 AM every morning", "difficulty": "beginner"}},
-  {{"word": "comfortable", "context": "The hotel room was very comfortable", "difficulty": "intermediate"}}
+  {{"word": "breakfast", "context": "I eat breakfast at 8 AM.", "difficulty": "beginner"}},
+  {{"word": "comfortable", "context": "The hotel was very comfortable.", "difficulty": "intermediate"}}
 ]
 
-IMPORTANT: Return ONLY the JSON array, no additional text."""
+Return ONLY the JSON array with no extra commentary."""
     
     def _get_simple_vocab_prompt(self, transcript: str, max_words: int) -> str:
-        """Simple, concise prompt"""
-        return f"""Extract {max_words} important English vocabulary words from this lesson transcript.
+        """Concise prompt variant"""
+        return f"""From the following transcript, list {max_words} important English words that students should practice.
+For each entry include the word, a clear example sentence, and the difficulty level.
 
 Transcript:
 {transcript[:2000]}
 
-Return JSON format:
-[{{"word": "...", "context": "example sentence", "difficulty": "beginner/intermediate/advanced"}}]
+Output JSON only in this shape:
+[{{"word": "...", "context": "...", "difficulty": "beginner/intermediate/advanced"}}]
 
-Only return the JSON array."""
+Do not include any extra prose—return just the JSON array."""
     
     def _get_role_vocab_prompt(self, transcript: str, max_words: int) -> str:
-        """Role-based prompt for better context understanding"""
-        return f"""As an experienced English teacher, analyze this lesson transcript and identify {max_words} vocabulary words your students should practice.
+        """Role-based prompt aimed at teaching context"""
+        return f"""You are preparing feedback for your ESL class. Review this transcript and choose {max_words} vocabulary words your students must study.
+Focus on real-world usefulness, mistakes the students made, and the lesson's main theme.
 
-Focus on:
-- Words that will help students in real conversations
-- Words students struggled with
-- Topic-relevant vocabulary
-- Practical, everyday words
+For each item report:
+- "word": the vocabulary item
+- "context": a short example sentence (prefer the transcript; otherwise craft a natural example)
+- "difficulty": beginner / intermediate / advanced
 
 Transcript:
 {transcript[:2500]}
 
-Provide each word with:
-1. The word itself
-2. A clear example sentence from the lesson
-3. Difficulty level (beginner/intermediate/advanced)
-
-Format as JSON array:
-[{{"word": "wake", "context": "I wake up at 7 AM", "difficulty": "beginner"}}]
-
-Return only the JSON array."""
+Return ONLY a JSON array like:
+[{{"word": "...", "context": "...", "difficulty": "..."}}]"""
     
     def generate_lesson_feedback(self, transcript: str) -> Dict[str, any]:
         """Generate comprehensive lesson feedback using AI"""
