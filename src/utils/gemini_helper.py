@@ -1,10 +1,12 @@
 # src/utils/gemini_helper.py
-"""Google Gemini AI integration for R&D on transcripts
-Production-ready with error handling and rate limiting"""
+"""Google Gemini AI integration for content extraction
+Production-ready with optimized prompts and comprehensive error handling"""
 
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 import logging
+import json
+import re
 
 try:
     import google.generativeai as genai
@@ -15,28 +17,35 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class GeminiHelper:
-    """Wrapper for Google Gemini API with production safeguards"""
+    """Production-ready Gemini AI wrapper with optimized prompts"""
     
-    def __init__(self):
+    def __init__(self, prompt_style: str = 'detailed'):
+        """
+        Initialize Gemini AI helper
+        
+        Args:
+            prompt_style: 'detailed', 'simple', or 'role' for A/B testing
+        """
         self.api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+        self.prompt_style = prompt_style
         
         if self.api_key and GENAI_AVAILABLE:
             try:
                 genai.configure(api_key=self.api_key)
                 self.model = genai.GenerativeModel('gemini-pro')
                 self.enabled = True
-                print("✅ Google Gemini AI initialized successfully")
-                logger.info("✅ Gemini AI enabled for R&D")
+                print(f"[OK] Google Gemini AI initialized (prompt style: {prompt_style})")
+                logger.info(f"[OK] Gemini AI enabled with {prompt_style} prompts")
             except Exception as e:
-                print(f"⚠️ Gemini AI initialization failed: {e}. Using fallback.")
+                print(f"[WARNING] Gemini AI initialization failed: {e}. Using fallback.")
                 logger.warning(f"Gemini init failed: {e}")
                 self.enabled = False
                 self.model = None
         else:
             if not GENAI_AVAILABLE:
-                print("⚠️ google-generativeai package not installed. Using rule-based fallback.")
+                print("[WARNING] google-generativeai package not installed. Using rule-based fallback.")
             else:
-                print("⚠️ GOOGLE_API_KEY not found. Using rule-based fallback.")
+                print("[WARNING] GOOGLE_API_KEY not found. Using rule-based fallback.")
             self.enabled = False
             self.model = None
     
@@ -189,44 +198,32 @@ class GeminiHelper:
         return translations.get(phrase_lower, f"[{phrase}]")
     
     def extract_vocabulary_with_ai(self, transcript: str, max_words: int = 15) -> List[Dict[str, str]]:
-        """Use Gemini AI to extract vocabulary from ANY transcript"""
+        """Extract vocabulary using optimized AI prompts"""
         
         if not self.enabled or not self.model:
             logger.warning("Gemini AI not available, using fallback")
             return self._fallback_vocabulary_extraction(transcript, max_words)
         
         try:
-            prompt = f"""Analyze this conversation transcript and extract the most important English vocabulary words that would be useful for language learners.
-
-Transcript:
-{transcript[:2000]}
-
-Extract 10-15 useful English words or phrases. For each word, provide:
-1. The word/phrase
-2. A simple example sentence using that word from the transcript (or create one if needed)
-3. Difficulty level (beginner/intermediate/advanced)
-
-Format your response EXACTLY as JSON array:
-[
-  {{"word": "backend", "context": "We need to complete the backend", "difficulty": "intermediate"}},
-  {{"word": "completed", "context": "This task is completed", "difficulty": "beginner"}}
-]
-
-Only return the JSON array, nothing else."""
+            # Select prompt based on style
+            if self.prompt_style == 'detailed':
+                prompt = self._get_detailed_vocab_prompt(transcript, max_words)
+            elif self.prompt_style == 'simple':
+                prompt = self._get_simple_vocab_prompt(transcript, max_words)
+            else:  # role-based
+                prompt = self._get_role_vocab_prompt(transcript, max_words)
             
             response = self.model.generate_content(prompt)
             result_text = response.text.strip()
             
-            # Extract JSON from response
-            import json
-            import re
+            # Parse JSON response
+            vocab_list = self._parse_json_response(result_text)
             
-            # Try to find JSON array in response
-            json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
-            if json_match:
-                vocab_list = json.loads(json_match.group())
-                logger.info(f"✅ Gemini AI extracted {len(vocab_list)} vocabulary words")
-                return vocab_list[:max_words]
+            if vocab_list:
+                # Validate quality
+                validated = self._validate_vocabulary(vocab_list, transcript)
+                logger.info(f"[OK] Gemini AI extracted {len(validated)} vocabulary words")
+                return validated[:max_words]
             else:
                 logger.warning("Could not parse Gemini response, using fallback")
                 return self._fallback_vocabulary_extraction(transcript, max_words)
@@ -234,6 +231,308 @@ Only return the JSON array, nothing else."""
         except Exception as e:
             logger.error(f"Gemini AI vocabulary extraction failed: {e}")
             return self._fallback_vocabulary_extraction(transcript, max_words)
+    
+    def _get_detailed_vocab_prompt(self, transcript: str, max_words: int) -> str:
+        """Detailed prompt with context and examples"""
+        return f"""You are an expert ESL (English as a Second Language) teacher analyzing a lesson transcript.
+
+Your task: Extract {max_words} vocabulary words that would be MOST beneficial for intermediate English learners to practice.
+
+Consider these factors:
+1. Words used incorrectly by students (high priority)
+2. Key vocabulary for the lesson topic
+3. Words appearing in important contexts
+4. Practical words for daily conversation
+5. Words at appropriate difficulty level
+
+Transcript:
+{transcript[:2500]}
+
+Few-shot examples:
+Good extraction:
+- "breakfast" from "I eat breakfast at 8 AM" (common daily routine word)
+- "comfortable" from "The hotel was comfortable" (useful adjective)
+- "yesterday" from "I went shopping yesterday" (time expression)
+
+Bad extraction:
+- "the", "a", "is" (too basic)
+- "subsequently", "nevertheless" (too advanced for intermediate)
+- Random words without context
+
+Format your response EXACTLY as a JSON array:
+[
+  {{"word": "breakfast", "context": "I eat breakfast at 8 AM every morning", "difficulty": "beginner"}},
+  {{"word": "comfortable", "context": "The hotel room was very comfortable", "difficulty": "intermediate"}}
+]
+
+IMPORTANT: Return ONLY the JSON array, no additional text."""
+    
+    def _get_simple_vocab_prompt(self, transcript: str, max_words: int) -> str:
+        """Simple, concise prompt"""
+        return f"""Extract {max_words} important English vocabulary words from this lesson transcript.
+
+Transcript:
+{transcript[:2000]}
+
+Return JSON format:
+[{{"word": "...", "context": "example sentence", "difficulty": "beginner/intermediate/advanced"}}]
+
+Only return the JSON array."""
+    
+    def _get_role_vocab_prompt(self, transcript: str, max_words: int) -> str:
+        """Role-based prompt for better context understanding"""
+        return f"""As an experienced English teacher, analyze this lesson transcript and identify {max_words} vocabulary words your students should practice.
+
+Focus on:
+- Words that will help students in real conversations
+- Words students struggled with
+- Topic-relevant vocabulary
+- Practical, everyday words
+
+Transcript:
+{transcript[:2500]}
+
+Provide each word with:
+1. The word itself
+2. A clear example sentence from the lesson
+3. Difficulty level (beginner/intermediate/advanced)
+
+Format as JSON array:
+[{{"word": "wake", "context": "I wake up at 7 AM", "difficulty": "beginner"}}]
+
+Return only the JSON array."""
+    
+    def generate_lesson_feedback(self, transcript: str) -> Dict[str, any]:
+        """Generate comprehensive lesson feedback using AI"""
+        
+        if not self.enabled or not self.model:
+            logger.warning("Gemini AI not available for feedback generation")
+            return self._fallback_feedback(transcript)
+        
+        try:
+            prompt = f"""Analyze this English lesson transcript and provide constructive feedback for the student.
+
+Transcript:
+{transcript[:3000]}
+
+Provide detailed feedback in these categories:
+
+1. STRENGTHS: What did the student do well? (2-3 specific points)
+2. AREAS FOR IMPROVEMENT: What mistakes were made? (2-3 specific issues)
+3. VOCABULARY LEARNED: Key words/phrases from this lesson (5-8 words)
+4. GRAMMAR POINTS: Grammar concepts covered or needing practice
+5. NEXT STEPS: Specific recommendations for practice
+
+Format as JSON:
+{{
+  "strengths": ["Good use of past tense in most sentences", "Clear pronunciation of difficult words"],
+  "improvements": ["Practice using articles (a, an, the)", "Work on subject-verb agreement"],
+  "vocabulary_learned": ["breakfast", "comfortable", "yesterday", "market"],
+  "grammar_points": ["Past simple tense", "Daily routine expressions"],
+  "next_steps": ["Practice daily routine vocabulary", "Review past tense irregular verbs"],
+  "overall_level": "intermediate",
+  "progress_notes": "Student is making good progress with conversational English"
+}}
+
+Return only the JSON object."""
+            
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+            
+            # Parse JSON
+            feedback = self._parse_json_response(result_text, expect_array=False)
+            
+            if feedback:
+                logger.info("[OK] Generated lesson feedback successfully")
+                return feedback
+            else:
+                return self._fallback_feedback(transcript)
+                
+        except Exception as e:
+            logger.error(f"Feedback generation failed: {e}")
+            return self._fallback_feedback(transcript)
+    
+    def generate_fill_blank_exercises(self, transcript: str, count: int = 8) -> List[Dict[str, any]]:
+        """Generate fill-in-blank exercises using AI"""
+        
+        if not self.enabled or not self.model:
+            logger.warning("Gemini AI not available for fill-in-blank generation")
+            return []
+        
+        try:
+            prompt = f"""Create {count} fill-in-blank exercises from this lesson transcript.
+
+Transcript:
+{transcript[:2500]}
+
+Instructions:
+1. Select {count} sentences from the transcript (or create similar ones)
+2. For each sentence, remove ONE key word (verb, noun, adjective, or adverb)
+3. Provide 4 options: 1 correct answer + 3 plausible distractors
+4. Distractors should be grammatically similar but contextually wrong
+5. Mark which option is correct
+
+Few-shot example:
+Original: "I wake up at 7 AM every morning."
+Exercise: "I ___ up at 7 AM every morning."
+Options: ["wake", "woke", "waking", "woken"]
+Correct: "wake"
+
+Format as JSON array:
+[
+  {{
+    "sentence": "I ___ up at 7 AM every morning.",
+    "blank_word": "wake",
+    "options": ["wake", "woke", "waking", "woken"],
+    "correct_answer": "wake",
+    "difficulty": "beginner",
+    "explanation": "Present simple tense for daily routines"
+  }}
+]
+
+Return only the JSON array with {count} exercises."""
+            
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+            
+            exercises = self._parse_json_response(result_text)
+            
+            if exercises:
+                logger.info(f"[OK] Generated {len(exercises)} fill-in-blank exercises")
+                return exercises[:count]
+            else:
+                logger.warning("Could not parse fill-in-blank response")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Fill-in-blank generation failed: {e}")
+            return []
+    
+    def generate_spelling_exercises(self, transcript: str, count: int = 10) -> List[Dict[str, str]]:
+        """Generate spelling exercises using AI"""
+        
+        if not self.enabled or not self.model:
+            logger.warning("Gemini AI not available for spelling generation")
+            return []
+        
+        try:
+            prompt = f"""Generate {count} spelling practice words from this lesson transcript.
+
+Transcript:
+{transcript[:2500]}
+
+Select {count} words that:
+1. Are important for students to spell correctly
+2. Are at appropriate difficulty (not too easy, not too hard)
+3. Appear in the lesson or are topic-relevant
+4. Range from 4-12 letters
+
+For each word provide:
+- The word to spell
+- A clear example sentence
+- Difficulty level
+- Optional hint about the word
+
+Format as JSON array:
+[
+  {{
+    "word": "breakfast",
+    "sample_sentence": "I eat breakfast at 8 o'clock every morning",
+    "difficulty": "intermediate",
+    "hint": "First meal of the day",
+    "word_type": "noun"
+  }}
+]
+
+Return only the JSON array with {count} words."""
+            
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+            
+            spelling_words = self._parse_json_response(result_text)
+            
+            if spelling_words:
+                logger.info(f"[OK] Generated {len(spelling_words)} spelling exercises")
+                return spelling_words[:count]
+            else:
+                logger.warning("Could not parse spelling response")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Spelling generation failed: {e}")
+            return []
+    
+    def _parse_json_response(self, text: str, expect_array: bool = True) -> Optional[any]:
+        """Parse JSON from AI response with error handling"""
+        try:
+            # Remove markdown code blocks if present
+            text = re.sub(r'```json\s*', '', text)
+            text = re.sub(r'```\s*', '', text)
+            
+            # Try to find JSON in response
+            if expect_array:
+                json_match = re.search(r'\[.*\]', text, re.DOTALL)
+            else:
+                json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            
+            if json_match:
+                return json.loads(json_match.group())
+            else:
+                # Try parsing entire text
+                return json.loads(text)
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Response parsing error: {e}")
+            return None
+    
+    def _validate_vocabulary(self, vocab_list: List[Dict], transcript: str) -> List[Dict]:
+        """Validate and filter vocabulary results"""
+        validated = []
+        seen_words = set()
+        
+        # Common words to exclude
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 
+                     'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                     'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that'}
+        
+        for item in vocab_list:
+            word = item.get('word', '').lower().strip()
+            
+            # Validation checks
+            if not word:
+                continue
+            if word in stop_words:
+                continue
+            if word in seen_words:
+                continue
+            if len(word) < 2 or len(word) > 30:
+                continue
+            
+            # Ensure required fields
+            if 'context' not in item:
+                item['context'] = f"Example with {word}"
+            if 'difficulty' not in item:
+                item['difficulty'] = 'intermediate'
+            
+            validated.append(item)
+            seen_words.add(word)
+        
+        return validated
+    
+    def _fallback_feedback(self, transcript: str) -> Dict[str, any]:
+        """Fallback feedback when AI is unavailable"""
+        return {
+            "strengths": ["Completed the lesson", "Engaged in conversation"],
+            "improvements": ["Continue practicing", "Review vocabulary"],
+            "vocabulary_learned": [],
+            "grammar_points": ["General practice"],
+            "next_steps": ["Practice daily", "Review lesson content"],
+            "overall_level": "intermediate",
+            "progress_notes": "Keep up the good work!"
+        }
     
     def _fallback_vocabulary_extraction(self, transcript: str, max_words: int = 15) -> List[Dict[str, str]]:
         """Fallback: Extract common English words from transcript"""
@@ -276,5 +575,5 @@ Only return the JSON array, nothing else."""
                     'priority': 'medium'
                 })
         
-        logger.info(f"✅ Fallback extracted {len(vocabulary)} vocabulary words")
+        logger.info(f"[OK] Fallback extracted {len(vocabulary)} vocabulary words")
         return vocabulary

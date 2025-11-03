@@ -5,7 +5,7 @@ import os
 import re
 import time
 from threading import Thread
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -16,17 +16,33 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import requests
 import assemblyai as aai
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from src.main import LessonProcessor
 
 load_dotenv()
 
-# Configure logging
+# Configure comprehensive logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('api.log', mode='a')
+    ]
 )
 logger = logging.getLogger(__name__)
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
+# Log startup
+logger.info("="*50)
+logger.info("Starting Lesson Content Extractor API")
+logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
+logger.info("="*50)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -37,6 +53,10 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# Add rate limiter state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -45,6 +65,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all incoming requests"""
+    start_time = datetime.utcnow()
+    
+    # Log request
+    logger.info(f"-> {request.method} {request.url.path} from {request.client.host}")
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Calculate duration
+    duration = (datetime.utcnow() - start_time).total_seconds()
+    
+    # Log response
+    logger.info(f"<- {request.method} {request.url.path} - Status: {response.status_code} - Duration: {duration:.3f}s")
+    
+    return response
 
 # Initialize processor
 processor = LessonProcessor()
@@ -240,7 +280,7 @@ class ZoomTokenManager:
                 expires_in = tokens.get('expires_in', 3600)
                 self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 300)
                 
-                logger.info(f"✅ Zoom token refreshed successfully (expires in {expires_in}s)")
+                logger.info(f"[OK] Zoom token refreshed successfully (expires in {expires_in}s)")
                 return self.access_token
             else:
                 logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
@@ -263,9 +303,9 @@ ASSEMBLYAI_BASE_URL = os.getenv("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.c
 
 if ASSEMBLYAI_API_KEY:
     aai.settings.api_key = ASSEMBLYAI_API_KEY
-    logger.info("✅ AssemblyAI initialized successfully")
+    logger.info("[OK] AssemblyAI initialized successfully")
 else:
-    logger.warning("⚠️ ASSEMBLYAI_API_KEY not found. Audio transcription will be disabled.")
+    logger.warning("[WARNING] ASSEMBLYAI_API_KEY not found. Audio transcription will be disabled.")
     
 # Zoom Helper Functions
 def validate_time(time_str: str) -> Optional[str]:
@@ -425,7 +465,7 @@ def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
         raise ValueError("ASSEMBLYAI_API_KEY not configured")
     
     try:
-        logger.info("🎙️ Starting AssemblyAI transcription...")
+        logger.info("Starting AssemblyAI transcription...")
         
         # Configure transcription settings
         config = aai.TranscriptionConfig(
@@ -444,7 +484,7 @@ def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
         if transcript.status == aai.TranscriptStatus.error:
             raise Exception(f"Transcription failed: {transcript.error}")
         
-        logger.info(f"✅ Transcription completed ({len(transcript.text)} characters)")
+        logger.info(f"Transcription completed ({len(transcript.text)} characters)")
         
         return {
             'text': transcript.text,
@@ -455,7 +495,7 @@ def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
         }
         
     except Exception as e:
-        logger.error(f"❌ AssemblyAI transcription error: {e}")
+        logger.error(f"AssemblyAI transcription error: {e}")
         raise Exception(f"Transcription failed: {str(e)}")
 
         
@@ -494,10 +534,10 @@ def process_recording_background(recording: Dict, user_params: Dict):
         # Audio transcription with AssemblyAI
         elif recording['processing_type'] == 'AUDIO_TRANSCRIPTION':
             if not ASSEMBLYAI_API_KEY:
-                logger.error("❌ AssemblyAI API key not configured")
+                logger.error("AssemblyAI API key not configured")
                 return
             
-            logger.info(f"🎙️ Starting audio transcription for meeting {recording['meeting_id']}")
+            logger.info(f"Starting audio transcription for meeting {recording['meeting_id']}")
             
             # Get audio file download URL (with Zoom token)
             audio_url = recording['target_file']['download_url']
@@ -533,7 +573,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
                     'transcription_completed_at': datetime.now(timezone.utc).isoformat()
                 }
                 
-                logger.info(f"✅ Audio transcribed successfully ({len(transcription_result['text'])} chars)")
+                logger.info(f"Audio transcribed successfully ({len(transcription_result['text'])} chars)")
                 
             finally:
                 # Clean up temp file
@@ -542,7 +582,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
                     os.remove(tmp_audio_path)
         
         else:
-            logger.warning(f"⚠️ Unknown processing type: {recording.get('processing_type')}")
+            logger.warning(f"Unknown processing type: {recording.get('processing_type')}")
             return
         
         # Store in Supabase
@@ -568,10 +608,10 @@ def process_recording_background(recording: Dict, user_params: Dict):
             }
             
             response = supabase_client.client.table('zoom_summaries').insert(supabase_data).execute()
-            logger.info(f"✅ Stored in Supabase: {response.data[0].get('id') if response.data else 'unknown'}")
+            logger.info(f"Stored in Supabase: {response.data[0].get('id') if response.data else 'unknown'}")
         
     except Exception as e:
-        logger.error(f"❌ Error processing recording {recording.get('meeting_id')}: {e}")
+        logger.error(f"Error processing recording {recording.get('meeting_id')}: {e}")
 
 # Request/Response Models
 class TranscriptInput(BaseModel):
@@ -1188,6 +1228,288 @@ async def general_exception_handler(request, exc):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"success": False, "error": "Internal server error"}
     )
+
+# ============================================================
+# GAMES API ENDPOINTS
+# ============================================================
+
+from src.games.word_lists import WordListsService
+from src.games.flashcards import FlashcardsService
+from src.games.models import (
+    WordListCreate, WordListUpdate, WordCreate, WordUpdate,
+    SessionStart, PracticeResult, SessionComplete, FavoriteToggle
+)
+
+# Initialize games services
+word_lists_service = WordListsService(supabase_client.client)
+flashcards_service = FlashcardsService(supabase_client.client)
+
+# Word Lists Endpoints
+@app.get("/v1/word-lists", tags=["Word Lists"])
+@limiter.limit("60/minute")
+async def get_word_lists(
+    request: Request,
+    user_id: str,
+    page: int = 1,
+    limit: int = 20,
+    search: Optional[str] = None,
+    favorite: Optional[bool] = None,
+    sort: str = "created_at"
+):
+    """Get all word lists for a user"""
+    try:
+        logger.info(f"[FETCH] Fetching word lists for user: {user_id}")
+        result = word_lists_service.get_word_lists(user_id, page, limit, search, favorite, sort)
+        logger.info(f"[OK] Returned {len(result['data'])} word lists")
+        return result
+    except Exception as e:
+        logger.error(f"[ERROR] Error getting word lists: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/word-lists", tags=["Word Lists"], status_code=201)
+@limiter.limit("30/minute")
+async def create_word_list(request: Request, data: WordListCreate, user_id: str):
+    """Create a new word list"""
+    try:
+        logger.info(f"[CREATE] Creating word list '{data.name}' for user: {user_id}")
+        result = word_lists_service.create_word_list(user_id, data.name, data.description)
+        logger.info(f"[OK] Word list created: {result['id']}")
+        return result
+    except Exception as e:
+        logger.error(f"[ERROR] Error creating word list: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/word-lists/{list_id}", tags=["Word Lists"])
+@limiter.limit("60/minute")
+async def get_word_list(request: Request, list_id: str, user_id: str, include: Optional[str] = None):
+    """Get a single word list"""
+    try:
+        logger.info(f"[FETCH] Fetching word list {list_id} for user: {user_id}")
+        include_words = include == "words"
+        result = word_lists_service.get_word_list(list_id, user_id, include_words)
+        if not result:
+            logger.warning(f"[WARNING] Word list {list_id} not found")
+            raise HTTPException(status_code=404, detail="Word list not found")
+        logger.info(f"[OK] Word list retrieved: {list_id}")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ERROR] Error getting word list: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/v1/word-lists/{list_id}", tags=["Word Lists"])
+@limiter.limit("30/minute")
+async def update_word_list(request: Request, list_id: str, user_id: str, data: WordListUpdate):
+    """Update a word list"""
+    try:
+        logger.info(f"[UPDATE] Updating word list {list_id} for user: {user_id}")
+        updates = data.dict(exclude_unset=True)
+        result = word_lists_service.update_word_list(list_id, user_id, updates)
+        if not result:
+            raise HTTPException(status_code=404, detail="Word list not found")
+        logger.info(f"[OK] Word list updated: {list_id}")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ERROR] Error updating word list: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/word-lists/{list_id}", tags=["Word Lists"], status_code=204)
+@limiter.limit("30/minute")
+async def delete_word_list(request: Request, list_id: str, user_id: str):
+    """Delete a word list"""
+    try:
+        logger.info(f"[DELETE] Deleting word list {list_id} for user: {user_id}")
+        word_lists_service.delete_word_list(list_id, user_id)
+        logger.info(f"[OK] Word list deleted: {list_id}")
+        return None
+    except Exception as e:
+        logger.error(f"[ERROR] Error deleting word list: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/word-lists/{list_id}/words", tags=["Words"], status_code=201)
+@limiter.limit("60/minute")
+async def add_word(request: Request, list_id: str, user_id: str, data: WordCreate):
+    """Add a word to a list"""
+    try:
+        logger.info(f"[ADD] Adding word '{data.word}' to list {list_id}")
+        result = word_lists_service.add_word(list_id, user_id, data.word, data.translation, data.notes)
+        logger.info(f"[OK] Word added: {result['id']}")
+        return result
+    except ValueError as e:
+        logger.warning(f"[WARNING] Access denied: {e}")
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error adding word: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/v1/word-lists/{list_id}/words/{word_id}", tags=["Words"])
+@limiter.limit("60/minute")
+async def update_word(request: Request, list_id: str, word_id: str, user_id: str, data: WordUpdate):
+    """Update a word"""
+    try:
+        logger.info(f"[UPDATE] Updating word {word_id} in list {list_id}")
+        updates = data.dict(exclude_unset=True)
+        result = word_lists_service.update_word(list_id, word_id, user_id, updates)
+        if not result:
+            raise HTTPException(status_code=404, detail="Word not found")
+        logger.info(f"[OK] Word updated: {word_id}")
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ERROR] Error updating word: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/word-lists/{list_id}/words/{word_id}", tags=["Words"], status_code=204)
+@limiter.limit("60/minute")
+async def delete_word(request: Request, list_id: str, word_id: str, user_id: str):
+    """Delete a word"""
+    try:
+        logger.info(f"[DELETE] Deleting word {word_id} from list {list_id}")
+        word_lists_service.delete_word(list_id, word_id, user_id)
+        logger.info(f"[OK] Word deleted: {word_id}")
+        return None
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error deleting word: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/word-lists/{list_id}/favorite", tags=["Word Lists"])
+@limiter.limit("60/minute")
+async def toggle_list_favorite(request: Request, list_id: str, user_id: str, data: FavoriteToggle):
+    """Toggle favorite status for a word list"""
+    try:
+        logger.info(f"[FAVORITE] Toggling list {list_id} favorite to {data.isFavorite}")
+        result = word_lists_service.toggle_list_favorite(list_id, user_id, data.isFavorite)
+        logger.info(f"[OK] List favorite toggled: {list_id}")
+        return result
+    except ValueError as e:
+        logger.warning(f"[WARNING] Access denied: {e}")
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error toggling list favorite: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/word-lists/{list_id}/words/{word_id}/favorite", tags=["Words"])
+@limiter.limit("60/minute")
+async def toggle_word_favorite(request: Request, list_id: str, word_id: str, user_id: str, data: FavoriteToggle):
+    """Toggle favorite status for a word"""
+    try:
+        logger.info(f"[FAVORITE] Toggling word {word_id} favorite to {data.isFavorite}")
+        result = word_lists_service.toggle_word_favorite(list_id, word_id, user_id, data.isFavorite)
+        logger.info(f"[OK] Word favorite toggled: {word_id}")
+        return result
+    except ValueError as e:
+        logger.warning(f"[WARNING] Access denied: {e}")
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error toggling word favorite: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/user/stats", tags=["User Stats"])
+@limiter.limit("60/minute")
+async def get_user_stats(request: Request, user_id: str):
+    """Get user stats"""
+    try:
+        logger.info(f"[FETCH] Fetching user stats for user: {user_id}")
+        result = word_lists_service.get_user_stats(user_id)
+        logger.info(f"[OK] User stats retrieved: {user_id}")
+        return result
+    except Exception as e:
+        logger.error(f"[ERROR] Error getting user stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/flashcards/stats/me", tags=["Analytics"])
+@limiter.limit("60/minute")
+async def get_flashcard_stats(request: Request, user_id: str):
+    """Get flashcard analytics for the current user"""
+    try:
+        logger.info(f"[FETCH] Fetching flashcard stats for user: {user_id}")
+        result = flashcards_service.get_user_stats(user_id)
+        logger.info(f"[OK] Flashcard stats retrieved: {user_id}")
+        return result
+    except Exception as e:
+        logger.error(f"[ERROR] Error getting flashcard stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================
+# FLASHCARDS GAME ENDPOINTS
+# ============================================================
+
+@app.post("/v1/flashcards/sessions", tags=["Flashcards"], status_code=201)
+@limiter.limit("30/minute")
+async def start_flashcard_session(request: Request, data: SessionStart, user_id: str):
+    """Start a new flashcard practice session"""
+    try:
+        logger.info(f"[START] Starting flashcard session for user: {user_id}, list: {data.wordListId}")
+        result = flashcards_service.start_session(user_id, data.wordListId, data.selectedWordIds)
+        logger.info(f"[OK] Flashcard session started: {result['id']}")
+        return result
+    except ValueError as e:
+        logger.warning(f"[WARNING] Invalid request: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error starting flashcard session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/flashcards/sessions/{session_id}", tags=["Flashcards"])
+@limiter.limit("60/minute")
+async def get_flashcard_session(request: Request, session_id: str, user_id: str):
+    """Get flashcard session details"""
+    try:
+        logger.info(f"[FETCH] Fetching flashcard session: {session_id}")
+        result = flashcards_service.get_session(session_id, user_id)
+        if not result:
+            logger.warning(f"[WARNING] Session {session_id} not found")
+            raise HTTPException(status_code=404, detail="Session not found")
+        logger.info(f"[OK] Session retrieved: {session_id}")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ERROR] Error getting flashcard session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/flashcards/sessions/{session_id}/results", tags=["Flashcards"])
+@limiter.limit("120/minute")
+async def record_flashcard_result(request: Request, session_id: str, user_id: str, data: PracticeResult):
+    """Record a practice result for a flashcard"""
+    try:
+        logger.info(f"[RECORD] Recording result for session: {session_id}, word: {data.wordId}, correct: {data.isCorrect}")
+        result = flashcards_service.record_result(
+            session_id, user_id, data.wordId, data.isCorrect, data.attempts, data.timeSpent
+        )
+        logger.info(f"[OK] Result recorded for word: {data.wordId}")
+        return result
+    except ValueError as e:
+        logger.warning(f"[WARNING] Invalid result: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error recording flashcard result: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/flashcards/sessions/{session_id}/complete", tags=["Flashcards"])
+@limiter.limit("30/minute")
+async def complete_flashcard_session(request: Request, session_id: str, user_id: str, data: Optional[SessionComplete] = None):
+    """Complete a flashcard session"""
+    try:
+        logger.info(f"[COMPLETE] Completing flashcard session: {session_id}")
+        final_progress = data.progress.dict() if data and data.progress else None
+        result = flashcards_service.complete_session(session_id, user_id, final_progress)
+        logger.info(f"[OK] Session completed: {session_id}")
+        return result
+    except ValueError as e:
+        logger.warning(f"[WARNING] Invalid completion: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ERROR] Error completing flashcard session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

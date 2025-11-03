@@ -16,3 +16,7 @@ requests>=2.31.0
 
 # Transcription service
 assemblyai>=0.17.0
+pydantic>=2.5.0
+python-jose[cryptography]>=3.3.0
+slowapi>=0.1.9
+passlib[bcrypt]>=1.7.4

@@ -30,11 +30,11 @@ class LessonProcessor:
         """Process with exercise count limits"""
         
         print(f"\n{'='*60}")
-        print(f"📚 Processing Lesson {lesson_number}")
+        print(f"[INFO] Processing Lesson {lesson_number}")
         print(f"{'='*60}")
         
         if not transcript or not transcript.strip():
-            print(f"   ⚠️  Warning: Empty transcript for lesson {lesson_number}")
+            print(f"   [WARN] Warning: Empty transcript for lesson {lesson_number}")
             return {'fill_in_blank': [], 'flashcards': [], 'spelling': []}
         
         start_time = time.time()
@@ -46,9 +46,9 @@ class LessonProcessor:
             mistakes = self.mistake_extractor.extract(transcript)
             sentences = self.sentence_extractor.extract(transcript)
             
-            print(f"   ✓ Vocabulary: {len(vocabulary)} items")
-            print(f"   ✓ Mistakes: {len(mistakes)} identified")
-            print(f"   ✓ Sentences: {len(sentences)} extracted")
+            print(f"   [OK] Vocabulary: {len(vocabulary)} items")
+            print(f"   [OK] Mistakes: {len(mistakes)} identified")
+            print(f"   [OK] Sentences: {len(sentences)} extracted")
             
             # Generate exercises with limits
             print("\n[2/3] Generating exercises...")
@@ -83,26 +83,26 @@ class LessonProcessor:
             
             # Add more if needed
             if total < 8:
-                print(f"   ⚠️  Adjusting exercise count from {total} to 8")
+                print(f"   [WARN] Adjusting exercise count from {total} to 8")
                 # Try to generate more from available content
                 if len(fib) < 4 and len(sentences) > len(fib):
                     # Add one more fill-in-blank if possible
                     pass
             
-            print(f"   ✓ Fill-in-blank: {len(fib)} exercises")
-            print(f"   ✓ Flashcards: {len(flashcards)} cards")
-            print(f"   ✓ Spelling: {len(spelling)} words")
-            print(f"   ✓ Total exercises: {total} {'✅' if 8 <= total <= 12 else '⚠️'}")
+            print(f"   [OK] Fill-in-blank: {len(fib)} exercises")
+            print(f"   [OK] Flashcards: {len(flashcards)} cards")
+            print(f"   [OK] Spelling: {len(spelling)} words")
+            print(f"   [INFO] Total exercises: {total} {'OK' if 8 <= total <= 12 else 'WARN'}")
             
             # Quality check
             print("\n[3/3] Quality validation...")
             is_valid = self.quality_checker.validate_exercises(fib, flashcards, spelling)
             
             if not is_valid:
-                print(f"   ⚠️  Quality issues detected, review recommended")
+                print("   [WARN] Quality issues detected, review recommended")
             
             elapsed = time.time() - start_time
-            print(f"\n   ⏱️  Processing time: {elapsed:.2f} seconds")
+            print(f"\n   [TIME] Processing time: {elapsed:.2f} seconds")
             
             return {
                 'fill_in_blank': fib,
@@ -111,7 +111,7 @@ class LessonProcessor:
             }
             
         except Exception as e:
-            print(f"   ❌ Error processing lesson {lesson_number}: {e}")
+            print(f"   [ERROR] Error processing lesson {lesson_number}: {e}")
             import traceback
             traceback.print_exc()
             return {'fill_in_blank': [], 'flashcards': [], 'spelling': []}
@@ -126,26 +126,26 @@ class LessonProcessor:
                 fib_df = pd.DataFrame(exercises['fill_in_blank'])
                 fib_path = output_dir / f"lesson_{lesson_number}_fill_in_blank.csv"
                 fib_df.to_csv(fib_path, index=False)
-                print(f"   📄 {fib_path.name}")
+                print(f"   [FILE] {fib_path.name}")
             
             # Save Flashcards
             if exercises['flashcards']:
                 fc_df = pd.DataFrame(exercises['flashcards'])
                 fc_path = output_dir / f"lesson_{lesson_number}_flashcards.csv"
                 fc_df.to_csv(fc_path, index=False)
-                print(f"   📄 {fc_path.name}")
+                print(f"   [FILE] {fc_path.name}")
             
             # Save Spelling
             if exercises['spelling']:
                 sp_df = pd.DataFrame(exercises['spelling'])
                 sp_path = output_dir / f"lesson_{lesson_number}_spelling.csv"
                 sp_df.to_csv(sp_path, index=False)
-                print(f"   📄 {sp_path.name}")
+                print(f"   [FILE] {sp_path.name}")
             
             return True
             
         except Exception as e:
-            print(f"   ❌ Error saving files: {e}")
+            print(f"   [ERROR] Error saving files: {e}")
             return False
     
     def save_combined_excel(self, all_exercises: dict, output_dir: Path) -> Optional[Path]:
@@ -173,11 +173,11 @@ class LessonProcessor:
                         sheet_name = f'Lesson{lesson_num}_Spelling'[:31]
                         df.to_excel(writer, sheet_name=sheet_name, index=False)
             
-            print(f"\n📊 Combined Excel: {excel_path.name}")
+            print(f"\n[SUMMARY] Combined Excel: {excel_path.name}")
             return excel_path
             
         except Exception as e:
-            print(f"   ❌ Error creating Excel file: {e}")
+            print(f"   [ERROR] Error creating Excel file: {e}")
             return None
     
     def save_summary(self, all_exercises: dict, output_dir: Path) -> bool:
@@ -209,11 +209,11 @@ class LessonProcessor:
             summary_path = output_dir / "summary_statistics.csv"
             summary_df.to_csv(summary_path, index=False)
             
-            print(f"📈 Summary saved: {summary_path.name}")
+            print(f"\n[OK] Summary saved: {summary_path.name}")
             
             # Print summary table
             print("\n" + "="*60)
-            print("📊 SUMMARY STATISTICS")
+            print("SUMMARY STATISTICS")
             print("="*60)
             print(summary_df.to_string(index=False))
             print("="*60)
@@ -221,7 +221,7 @@ class LessonProcessor:
             return True
             
         except Exception as e:
-            print(f"   ❌ Error saving summary: {e}")
+            print(f"   [ERROR] Error saving summary: {e}")
             return False
 
 
@@ -236,9 +236,9 @@ def load_transcripts_from_files(transcript_dir: Path) -> Dict[int, str]:
                 content = file.read_text(encoding='utf-8')
                 if content.strip():
                     transcripts[lesson_num] = content
-                    print(f"   ✓ Loaded {file.name}")
+                    print(f"   [OK] Loaded {file.name}")
             except Exception as e:
-                print(f"   ⚠️  Error loading {file.name}: {e}")
+                print(f"   [WARN] Error loading {file.name}: {e}")
     
     return transcripts
 
@@ -246,7 +246,7 @@ def load_transcripts_from_files(transcript_dir: Path) -> Dict[int, str]:
 def main():
     """Main execution with enhanced error handling"""
     print("="*60)
-    print("🚀 LESSON CONTENT EXTRACTOR & EXERCISE GENERATOR v1.0")
+    print("LESSON CONTENT EXTRACTOR & EXERCISE GENERATOR v1.0")
     print("="*60)
     
     # Check for transcript files first (ADDED)
@@ -297,10 +297,10 @@ Teacher: Better: "The hotel was very comfortable."
     transcripts = file_transcripts if file_transcripts else default_transcripts
     
     if not transcripts:
-        print("❌ No transcripts found!")
+        print("No transcripts found!")
         return
     
-    print(f"\n📚 Found {len(transcripts)} lesson transcripts")
+    print(f"\nFound {len(transcripts)} lesson transcripts")
     
     processor = LessonProcessor()
     output_dir = Path("data/output")
@@ -314,10 +314,10 @@ Teacher: Better: "The hotel was very comfortable."
         exercises = processor.process_lesson(transcript, lesson_num)
         all_exercises[lesson_num] = exercises
         
-        print("\n📁 Saving files:")
+        print("\nSaving files:")
         success = processor.save_to_csv(exercises, lesson_num, output_dir)
         if not success:
-            print(f"   ⚠️  Failed to save lesson {lesson_num} files")
+            print(f"   [WARN] Failed to save lesson {lesson_num} files")
     
     # Save combined Excel
     excel_path = processor.save_combined_excel(all_exercises, output_dir)
