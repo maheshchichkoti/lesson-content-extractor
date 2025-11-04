@@ -34,18 +34,18 @@ class GeminiHelper:
                 genai.configure(api_key=self.api_key)
                 self.model = genai.GenerativeModel('gemini-pro')
                 self.enabled = True
-                print(f"[OK] Google Gemini AI initialized (prompt style: {prompt_style})")
-                logger.info(f"[OK] Gemini AI enabled with {prompt_style} prompts")
+                print(f"Google Gemini AI initialized (prompt style: {prompt_style})")
+                logger.info(f"Gemini AI enabled with {prompt_style} prompts")
             except Exception as e:
-                print(f"[WARNING] Gemini AI initialization failed: {e}. Using fallback.")
+                print(f"Gemini AI initialization failed: {e}. Using fallback.")
                 logger.warning(f"Gemini init failed: {e}")
                 self.enabled = False
                 self.model = None
         else:
             if not GENAI_AVAILABLE:
-                print("[WARNING] google-generativeai package not installed. Using rule-based fallback.")
+                print("google-generativeai package not installed. Using rule-based fallback.")
             else:
-                print("[WARNING] GOOGLE_API_KEY not found. Using rule-based fallback.")
+                print("GOOGLE_API_KEY not found. Using rule-based fallback.")
             self.enabled = False
             self.model = None
     
@@ -167,31 +167,31 @@ class GeminiHelper:
       
       return generated[:count]
     
-    def translate_phrase(self, phrase: str, target_lang: str = 'Hindi') -> str:
+    def translate_phrase(self, phrase: str, target_lang: str = 'Hebrew') -> str:
         """Translate phrase for flashcards"""
         
         # Simple translation dictionary (expandable)
         translations = {
-            'wake up': 'जागना (jaagna)',
-            'breakfast': 'नाश्ता (naashta)',
-            'bread': 'रोटी (roti)',
-            'eggs': 'अंडे (ande)',
-            'teeth': 'दांत (daant)',
-            'football': 'फुटबॉल',
-            'music': 'संगीत (sangeet)',
-            'books': 'किताबें (kitaaben)',
-            'family': 'परिवार (parivaar)',
-            'father': 'पिता (pita)',
-            'mother': 'माता (maata)',
-            'engineer': 'इंजीनियर',
-            'teacher': 'शिक्षक (shikshak)',
-            'market': 'बाज़ार (bazaar)',
-            'vegetables': 'सब्जियां (sabziyaan)',
-            'fruits': 'फल (phal)',
-            'yesterday': 'कल (kal)',
-            'hotel': 'होटल',
-            'comfortable': 'आरामदायक (aaraamdaayak)',
-            'sometimes': 'कभी-कभी (kabhi-kabhi)'
+            'wake up': 'להתעורר (lehitorer)',
+            'breakfast': 'ארוחת בוקר (aruchat boker)',
+            'bread': 'לחם (lechem)',
+            'eggs': 'ביצים (beitzim)',
+            'teeth': 'שיניים (shinayim)',
+            'football': 'כדורגל (kaduregel)',
+            'music': 'מוזיקה (muzika)',
+            'books': 'ספרים (sefarim)',
+            'family': 'משפחה (mishpacha)',
+            'father': 'אבא (aba)',
+            'mother': 'אמא (ima)',
+            'engineer': 'מהנדס (mihandes)',
+            'teacher': 'מורה (mora)',
+            'market': 'שוק (shuk)',
+            'vegetables': 'ירקות (yerakot)',
+            'fruits': 'פירות (priyot)',
+            'yesterday': 'אתמול (etmol)',
+            'hotel': 'מלון (malon)',
+            'comfortable': 'נוח (noach)',
+            'sometimes': 'לפעמים (lepaamim)'
         }
         
         phrase_lower = phrase.lower()

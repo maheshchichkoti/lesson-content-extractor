@@ -150,5 +150,46 @@ class TestSpellingGenerator(unittest.TestCase):
         self.assertEqual(len(words), len(unique_words), "Should not have duplicate words")
 
 
+class TestHebrewTranslations(unittest.TestCase):
+    """Test Hebrew translation functionality"""
+    
+    def setUp(self):
+        self.gemini = GeminiHelper()
+    
+    def test_hebrew_translations_return_hebrew_text(self):
+        """Should return Hebrew text for known words"""
+        test_cases = [
+            ('wake up', 'להתעורר'),
+            ('breakfast', 'ארוחת בוקר'),
+            ('bread', 'לחם'),
+            ('family', 'משפחה'),
+            ('teacher', 'מורה')
+        ]
+        
+        for english_word, expected_hebrew in test_cases:
+            translation = self.gemini.translate_phrase(english_word)
+            self.assertIn(expected_hebrew, translation, 
+                         f"Translation for '{english_word}' should contain Hebrew text")
+    
+    def test_unknown_words_return_bracketed_format(self):
+        """Should return bracketed format for unknown words"""
+        unknown_word = 'unknownword123'
+        translation = self.gemini.translate_phrase(unknown_word)
+        expected = f"[{unknown_word}]"
+        self.assertEqual(translation, expected)
+    
+    def test_case_insensitive_lookup(self):
+        """Should handle case insensitive lookups"""
+        translations = [
+            self.gemini.translate_phrase('Wake Up'),
+            self.gemini.translate_phrase('WAKE UP'),
+            self.gemini.translate_phrase('wake up')
+        ]
+        
+        # All should return the same Hebrew translation
+        self.assertEqual(translations[0], translations[1])
+        self.assertEqual(translations[1], translations[2])
+
+
 if __name__ == '__main__':
     unittest.main()
