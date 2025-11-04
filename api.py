@@ -1,45 +1,51 @@
-
 """Production-ready FastAPI application for lesson content extraction"""
 
 import os
 import re
 import time
 from threading import Thread
+from typing import List, Dict, Optional
+
+import assemblyai as aai
+import logging
+from logging.handlers import RotatingFileHandler
+import requests
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict, Optional
-import logging
-from datetime import datetime, timezone, timedelta
-from supabase import create_client, Client
-from dotenv import load_dotenv
-import requests
-import assemblyai as aai
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from supabase import create_client, Client
 
+from src.middleware import limiter, rate_limit_exceeded_handler
 from src.main import LessonProcessor
+from src.utils.time_utils import utc_now, utc_now_iso
 
 load_dotenv()
 
-# Configure comprehensive logging
+# Configure comprehensive logging with rotation
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('api.log', mode='a')
+        RotatingFileHandler(
+            'api.log', 
+            maxBytes=10*1024*1024,  # 10MB per file
+            backupCount=5  # Keep 5 backup files
+        )
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
-
 # Log startup
 logger.info("="*50)
+
 logger.info("Starting Lesson Content Extractor API")
 logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
 logger.info("="*50)
@@ -55,7 +61,7 @@ app = FastAPI(
 
 # Add rate limiter state
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # CORS middleware
 app.add_middleware(
@@ -70,7 +76,7 @@ app.add_middleware(
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all incoming requests"""
-    start_time = datetime.utcnow()
+    start_time = utc_now()
     
     # Log request
     logger.info(f"-> {request.method} {request.url.path} from {request.client.host}")
@@ -79,7 +85,7 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     
     # Calculate duration
-    duration = (datetime.utcnow() - start_time).total_seconds()
+    duration = (utc_now() - start_time).total_seconds()
     
     # Log response
     logger.info(f"<- {request.method} {request.url.path} - Status: {response.status_code} - Duration: {duration:.3f}s")
@@ -172,7 +178,7 @@ class SupabaseClient:
                 'flashcards': exercises.get('flashcards', []),
                 'spelling': exercises.get('spelling', []),
                 'quality_score': total_exercises,
-                'generated_at': datetime.now(timezone.utc).isoformat()
+                'generated_at': utc_now_iso()
             }
             
             response = self.client.table('lesson_exercises').insert(exercise_data).execute()
@@ -240,12 +246,12 @@ class ZoomTokenManager:
         self.client_secret = os.getenv('ZOOM_CLIENT_SECRET', '')
         self.access_token = os.getenv('ZOOM_ACCESS_TOKEN', '')
         self.refresh_token = os.getenv('ZOOM_REFRESH_TOKEN', '')
-        self.token_expires_at = datetime.now(timezone.utc)
+        self.token_expires_at = datetime.now()
     
     def get_token(self) -> str:
         """Get valid access token, auto-refresh if expired"""
         # If token is still valid, return it
-        if self.access_token and datetime.now(timezone.utc) < self.token_expires_at:
+        if self.access_token and datetime.now() < self.token_expires_at:
             return self.access_token
         
         # Token expired, refresh it
@@ -254,7 +260,7 @@ class ZoomTokenManager:
             return self.access_token
         
         try:
-            logger.info("🔄 Refreshing Zoom access token...")
+            logger.info(" Refreshing Zoom access token...")
             
             import base64
             credentials = f"{self.client_id}:{self.client_secret}"
@@ -278,7 +284,7 @@ class ZoomTokenManager:
                 self.refresh_token = tokens.get('refresh_token', self.refresh_token)
                 # Set expiry 5 minutes before actual expiry for safety
                 expires_in = tokens.get('expires_in', 3600)
-                self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 300)
+                self.token_expires_at = datetime.now() + timedelta(seconds=expires_in - 300)
                 
                 logger.info(f"[OK] Zoom token refreshed successfully (expires in {expires_in}s)")
                 return self.access_token
@@ -502,7 +508,7 @@ def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
 def process_recording_background(recording: Dict, user_params: Dict):
     """Background task to process a single recording."""
     try:
-        logger.info(f"📄 Processing recording: {recording['meeting_id']}")
+        logger.info(f" Processing recording: {recording['meeting_id']}")
         
         # Download transcript from Zoom
         if recording['processing_type'] == 'TRANSCRIPT_DOWNLOAD':
@@ -528,7 +534,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 'transcription_source': 'zoom_native_transcript',
                 'processing_mode': 'transcript_download',
                 'transcription_status': 'completed',
-                'transcription_completed_at': datetime.now(timezone.utc).isoformat()
+                'transcription_completed_at': utc_now_iso()
             }
         
         # Audio transcription with AssemblyAI
@@ -570,7 +576,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
                     'transcription_status': transcription_result['status'],
                     'transcription_confidence': transcription_result.get('confidence'),
                     'audio_duration_seconds': transcription_result.get('duration'),
-                    'transcription_completed_at': datetime.now(timezone.utc).isoformat()
+                    'transcription_completed_at': utc_now_iso()
                 }
                 
                 logger.info(f"Audio transcribed successfully ({len(transcription_result['text'])} chars)")
@@ -604,7 +610,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 'transcription_service': 'Zoom' if result['transcription_source'] == 'zoom_native_transcript' else 'AssemblyAI',
                 'transcription_confidence': result.get('transcription_confidence'),
                 'audio_duration_seconds': result.get('audio_duration_seconds'),
-                'processing_completed_at': datetime.now(timezone.utc).isoformat()
+                'processing_completed_at': utc_now_iso()
             }
             
             response = supabase_client.client.table('zoom_summaries').insert(supabase_data).execute()
@@ -713,7 +719,7 @@ async def health_check():
     """Health check endpoint"""
     return HealthResponse(
         status="healthy",
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=utc_now_iso(),
         version="1.0.0"
     )
 
@@ -733,7 +739,7 @@ async def process_single_lesson(input_data: TranscriptInput):
     - Processing metadata
     """
     try:
-        start_time = datetime.utcnow()
+        start_time = utc_now()
         logger.info(f"Processing lesson {input_data.lesson_number}")
         
         # Process the lesson
@@ -758,7 +764,7 @@ async def process_single_lesson(input_data: TranscriptInput):
             quality_passed=quality_passed
         )
         
-        end_time = datetime.utcnow()
+        end_time = utc_now()
         processing_time = (end_time - start_time).total_seconds()
         
         logger.info(f"Lesson {input_data.lesson_number} processed successfully in {processing_time:.2f}s")
@@ -797,7 +803,7 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
     - Processing metadata
     """
     try:
-        start_time = datetime.utcnow()
+        start_time = utc_now()
         logger.info(
             f"Processing Zoom lesson: user={input_data.user_id}, "
             f"teacher={input_data.teacher_id}, class={input_data.class_id}, date={input_data.date}"
@@ -878,7 +884,7 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             "transcription_service": transcript_data.get('transcription_service')
         }
         
-        end_time = datetime.utcnow()
+        end_time = utc_now()
         processing_time = (end_time - start_time).total_seconds()
         
         logger.info(
@@ -943,7 +949,7 @@ async def get_transcript(
         return {
             "success": True,
             "data": transcript_data,
-            "timestamp": datetime.utcnow().isoformat()
+            'timestamp': utc_now_iso()
         }
         
     except HTTPException:
@@ -1006,7 +1012,7 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
                     "date": input_data.date,
                     "total_meetings": 0
                 },
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": utc_now_iso()
             }
         
         # Filter recordings
@@ -1053,7 +1059,7 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
                     "total_meetings": len(meetings),
                     "filtered_recordings": 0
                 },
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": utc_now_iso()
             }
         
         # Process recordings in background
@@ -1093,7 +1099,7 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
                     for r in filtered_recordings
                 ]
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_now_iso()
         }
         
     except HTTPException:
@@ -1132,7 +1138,7 @@ async def get_exercises(
                 "message": "No exercises found for the specified class",
                 "data": [],
                 "count": 0,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": utc_now_iso()
             }
         
         return {
@@ -1140,7 +1146,7 @@ async def get_exercises(
             "message": f"Retrieved {len(exercises)} exercise set(s)",
             "data": exercises,
             "count": len(exercises),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_now_iso()
         }
         
     except HTTPException:
@@ -1166,7 +1172,7 @@ async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
     - Aggregated processing metadata
     """
     try:
-        start_time = datetime.utcnow()
+        start_time = utc_now()
         logger.info(f"Processing batch of {len(input_data.transcripts)} lessons")
         
         lessons_data = []
@@ -1191,7 +1197,7 @@ async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
             )
             lessons_data.append(lesson_data)
         
-        end_time = datetime.utcnow()
+        end_time = utc_now()
         processing_time = (end_time - start_time).total_seconds()
         
         logger.info(f"Batch processing completed in {processing_time:.2f}s")
@@ -1235,14 +1241,26 @@ async def general_exception_handler(request, exc):
 
 from src.games.word_lists import WordListsService
 from src.games.flashcards import FlashcardsService
+from src.games.spelling_bee import SpellingBeeService
+from src.games.advanced_cloze import AdvancedClozeService
+from src.games.grammar_challenge import GrammarChallengeService
+from src.games.sentence_builder import SentenceBuilderService
 from src.games.models import (
     WordListCreate, WordListUpdate, WordCreate, WordUpdate,
-    SessionStart, PracticeResult, SessionComplete, FavoriteToggle
+    SessionStart, PracticeResult, SessionComplete, FavoriteToggle,
+    SpellingSessionStart, SpellingResult,
+    ClozeSessionStart, ClozeResult,
+    GrammarSessionStart, GrammarResult, GrammarSkip,
+    SentenceBuilderSessionStart, SentenceBuilderResult
 )
 
 # Initialize games services
 word_lists_service = WordListsService(supabase_client.client)
 flashcards_service = FlashcardsService(supabase_client.client)
+spelling_bee_service = SpellingBeeService(supabase_client.client)
+advanced_cloze_service = AdvancedClozeService(supabase_client.client)
+grammar_challenge_service = GrammarChallengeService(supabase_client.client)
+sentence_builder_service = SentenceBuilderService(supabase_client.client)
 
 # Word Lists Endpoints
 @app.get("/v1/word-lists", tags=["Word Lists"])
@@ -1509,6 +1527,474 @@ async def complete_flashcard_session(request: Request, session_id: str, user_id:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"[ERROR] Error completing flashcard session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================
+# SPELLING BEE GAME ENDPOINTS
+# ============================================================
+
+@app.post("/v1/spelling/sessions", tags=["Spelling Bee"], status_code=201)
+@limiter.limit("30/minute")
+async def start_spelling_session(request: Request, data: SpellingSessionStart, user_id: str):
+    """Start a new spelling bee session"""
+    try:
+        logger.info(f"[SPELLING_BEE] Starting session for user: {user_id}, list: {data.wordListId}")
+        result = spelling_bee_service.start_session(user_id, data.wordListId, data.selectedWordIds, data.shuffle)
+        logger.info(f"[SPELLING_BEE] Session started: {result['id']}")
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SPELLING_BEE] Error starting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/spelling/sessions/{session_id}", tags=["Spelling Bee"])
+@limiter.limit("60/minute")
+async def get_spelling_session(request: Request, session_id: str, user_id: str):
+    """Get spelling bee session details"""
+    try:
+        result = spelling_bee_service.get_session(session_id, user_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[SPELLING_BEE] Error getting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/spelling/sessions/{session_id}/results", tags=["Spelling Bee"])
+@limiter.limit("120/minute")
+async def record_spelling_result(request: Request, session_id: str, user_id: str, data: SpellingResult):
+    """Record a spelling result"""
+    try:
+        result = spelling_bee_service.record_result(
+            session_id, user_id, data.wordId, data.userAnswer, data.isCorrect, data.attempts, data.timeSpent
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SPELLING_BEE] Error recording result: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/spelling/sessions/{session_id}/complete", tags=["Spelling Bee"])
+@limiter.limit("30/minute")
+async def complete_spelling_session(request: Request, session_id: str, user_id: str, data: Optional[SessionComplete] = None):
+    """Complete a spelling bee session"""
+    try:
+        final_progress = data.progress.dict() if data and data.progress else None
+        result = spelling_bee_service.complete_session(session_id, user_id, final_progress)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SPELLING_BEE] Error completing session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/spelling/pronunciations/{word_id}", tags=["Spelling Bee"])
+@limiter.limit("120/minute")
+async def get_pronunciation(request: Request, word_id: str, user_id: str):
+    """Get pronunciation audio URL for a word"""
+    try:
+        result = spelling_bee_service.get_pronunciation(word_id, user_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SPELLING_BEE] Error getting pronunciation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================
+# ADVANCED CLOZE GAME ENDPOINTS
+# ============================================================
+
+@app.get("/v1/advanced-cloze/topics", tags=["Advanced Cloze"])
+@limiter.limit("60/minute")
+async def get_cloze_topics(request: Request):
+    """Get all cloze topics"""
+    try:
+        return advanced_cloze_service.get_topics()
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error getting topics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/advanced-cloze/lessons", tags=["Advanced Cloze"])
+@limiter.limit("60/minute")
+async def get_cloze_lessons(request: Request, topicId: Optional[str] = None):
+    """Get cloze lessons"""
+    try:
+        return advanced_cloze_service.get_lessons(topicId)
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error getting lessons: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/advanced-cloze/items", tags=["Advanced Cloze"])
+@limiter.limit("60/minute")
+async def get_cloze_items(
+    request: Request,
+    topicId: Optional[str] = None,
+    lessonId: Optional[str] = None,
+    difficulty: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    include: Optional[str] = None
+):
+    """Get cloze items"""
+    try:
+        include_options = "options" in (include or "")
+        return advanced_cloze_service.get_items(topicId, lessonId, difficulty, page, limit, include_options)
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error getting items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/advanced-cloze/sessions", tags=["Advanced Cloze"], status_code=201)
+@limiter.limit("30/minute")
+async def start_cloze_session(request: Request, data: ClozeSessionStart, user_id: str):
+    """Start a new cloze session"""
+    try:
+        result = advanced_cloze_service.start_session(
+            user_id, data.mode, data.topicId, data.lessonId, data.selectedItemIds, data.difficulty, data.limit
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error starting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/advanced-cloze/sessions/{session_id}", tags=["Advanced Cloze"])
+@limiter.limit("60/minute")
+async def get_cloze_session(request: Request, session_id: str, user_id: str, include: Optional[str] = None):
+    """Get cloze session details"""
+    try:
+        include_options = "options" in (include or "")
+        result = advanced_cloze_service.get_session(session_id, user_id, include_options)
+        if not result:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error getting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/advanced-cloze/sessions/{session_id}/results", tags=["Advanced Cloze"])
+@limiter.limit("120/minute")
+async def record_cloze_result(request: Request, session_id: str, user_id: str, data: ClozeResult):
+    """Record a cloze result"""
+    try:
+        result = advanced_cloze_service.record_result(
+            session_id, user_id, data.itemId, data.selectedAnswers, data.isCorrect, data.attempts, data.timeSpent
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error recording result: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/advanced-cloze/sessions/{session_id}/complete", tags=["Advanced Cloze"])
+@limiter.limit("30/minute")
+async def complete_cloze_session(request: Request, session_id: str, user_id: str, data: Optional[SessionComplete] = None):
+    """Complete a cloze session"""
+    try:
+        final_progress = data.progress.dict() if data and data.progress else None
+        result = advanced_cloze_service.complete_session(session_id, user_id, final_progress)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error completing session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/advanced-cloze/items/{item_id}/hint", tags=["Advanced Cloze"])
+@limiter.limit("120/minute")
+async def get_cloze_hint(request: Request, item_id: str, user_id: str):
+    """Get hint for a cloze item"""
+    try:
+        return advanced_cloze_service.get_hint(item_id, user_id)
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error getting hint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/advanced-cloze/mistakes", tags=["Advanced Cloze"])
+@limiter.limit("60/minute")
+async def get_cloze_mistakes(request: Request, user_id: str, page: int = 1, limit: int = 50):
+    """Get user's cloze mistakes"""
+    try:
+        return advanced_cloze_service.get_mistakes(user_id, page, limit)
+    except Exception as e:
+        logger.error(f"[ADVANCED_CLOZE] Error getting mistakes: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================
+# GRAMMAR CHALLENGE GAME ENDPOINTS
+# ============================================================
+
+@app.get("/v1/grammar-challenge/categories", tags=["Grammar Challenge"])
+@limiter.limit("60/minute")
+async def get_grammar_categories(request: Request):
+    """Get all grammar categories"""
+    try:
+        return grammar_challenge_service.get_categories()
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error getting categories: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/grammar-challenge/lessons", tags=["Grammar Challenge"])
+@limiter.limit("60/minute")
+async def get_grammar_lessons(request: Request, categoryId: Optional[str] = None):
+    """Get grammar lessons"""
+    try:
+        return grammar_challenge_service.get_lessons(categoryId)
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error getting lessons: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/grammar-challenge/questions", tags=["Grammar Challenge"])
+@limiter.limit("60/minute")
+async def get_grammar_questions(
+    request: Request,
+    categoryId: Optional[str] = None,
+    lessonId: Optional[str] = None,
+    difficulty: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    include: Optional[str] = None
+):
+    """Get grammar questions"""
+    try:
+        include_options = "options" in (include or "")
+        return grammar_challenge_service.get_questions(categoryId, lessonId, difficulty, page, limit, include_options)
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error getting questions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/grammar-challenge/sessions", tags=["Grammar Challenge"], status_code=201)
+@limiter.limit("30/minute")
+async def start_grammar_session(request: Request, data: GrammarSessionStart, user_id: str):
+    """Start a new grammar challenge session"""
+    try:
+        result = grammar_challenge_service.start_session(
+            user_id, data.mode, data.categoryId, data.lessonId, data.selectedQuestionIds, data.difficulty, data.limit
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error starting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/grammar-challenge/sessions/{session_id}", tags=["Grammar Challenge"])
+@limiter.limit("60/minute")
+async def get_grammar_session(request: Request, session_id: str, user_id: str, include: Optional[str] = None):
+    """Get grammar session details"""
+    try:
+        include_options = "options" in (include or "")
+        result = grammar_challenge_service.get_session(session_id, user_id, include_options)
+        if not result:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error getting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/grammar-challenge/sessions/{session_id}/results", tags=["Grammar Challenge"])
+@limiter.limit("180/minute")
+async def record_grammar_result(request: Request, session_id: str, user_id: str, data: GrammarResult):
+    """Record a grammar result"""
+    try:
+        result = grammar_challenge_service.record_result(
+            session_id, user_id, data.questionId, data.selectedAnswer, data.isCorrect, data.attempts, data.timeSpent
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error recording result: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/grammar-challenge/sessions/{session_id}/skip", tags=["Grammar Challenge"])
+@limiter.limit("180/minute")
+async def skip_grammar_question(request: Request, session_id: str, user_id: str, data: GrammarSkip):
+    """Skip a grammar question"""
+    try:
+        result = grammar_challenge_service.skip_question(session_id, user_id, data.questionId)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error skipping question: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/grammar-challenge/sessions/{session_id}/complete", tags=["Grammar Challenge"])
+@limiter.limit("30/minute")
+async def complete_grammar_session(request: Request, session_id: str, user_id: str, data: Optional[SessionComplete] = None):
+    """Complete a grammar challenge session"""
+    try:
+        final_progress = data.progress.dict() if data and data.progress else None
+        result = grammar_challenge_service.complete_session(session_id, user_id, final_progress)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error completing session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/grammar-challenge/questions/{question_id}/hint", tags=["Grammar Challenge"])
+@limiter.limit("120/minute")
+async def get_grammar_hint(request: Request, question_id: str, user_id: str):
+    """Get hint for a grammar question"""
+    try:
+        return grammar_challenge_service.get_hint(question_id, user_id)
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error getting hint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/grammar-challenge/mistakes", tags=["Grammar Challenge"])
+@limiter.limit("60/minute")
+async def get_grammar_mistakes(request: Request, user_id: str, page: int = 1, limit: int = 50):
+    """Get user's grammar mistakes"""
+    try:
+        return grammar_challenge_service.get_mistakes(user_id, page, limit)
+    except Exception as e:
+        logger.error(f"[GRAMMAR_CHALLENGE] Error getting mistakes: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================
+# SENTENCE BUILDER GAME ENDPOINTS
+# ============================================================
+
+@app.get("/v1/sentence-builder/topics", tags=["Sentence Builder"])
+@limiter.limit("60/minute")
+async def get_sentence_topics(request: Request):
+    """Get all sentence builder topics"""
+    try:
+        return sentence_builder_service.get_topics()
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting topics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/sentence-builder/lessons", tags=["Sentence Builder"])
+@limiter.limit("60/minute")
+async def get_sentence_lessons(request: Request, topicId: Optional[str] = None):
+    """Get sentence builder lessons"""
+    try:
+        return sentence_builder_service.get_lessons(topicId)
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting lessons: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/sentence-builder/items", tags=["Sentence Builder"])
+@limiter.limit("60/minute")
+async def get_sentence_items(
+    request: Request,
+    topicId: Optional[str] = None,
+    lessonId: Optional[str] = None,
+    difficulty: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    include: Optional[str] = None
+):
+    """Get sentence builder items"""
+    try:
+        include_tokens = "tokens" in (include or "")
+        return sentence_builder_service.get_items(topicId, lessonId, difficulty, page, limit, include_tokens)
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/sentence-builder/sessions", tags=["Sentence Builder"], status_code=201)
+@limiter.limit("30/minute")
+async def start_sentence_session(request: Request, data: SentenceBuilderSessionStart, user_id: str):
+    """Start a new sentence builder session"""
+    try:
+        result = sentence_builder_service.start_session(
+            user_id, data.mode, data.topicId, data.lessonId, data.selectedItemIds, data.difficulty, data.limit
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error starting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/sentence-builder/sessions/{session_id}", tags=["Sentence Builder"])
+@limiter.limit("60/minute")
+async def get_sentence_session(request: Request, session_id: str, user_id: str, include: Optional[str] = None):
+    """Get sentence builder session details"""
+    try:
+        include_items = "items" in (include or "")
+        result = sentence_builder_service.get_session(session_id, user_id, include_items)
+        if not result:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/sentence-builder/sessions/{session_id}/results", tags=["Sentence Builder"])
+@limiter.limit("120/minute")
+async def record_sentence_result(request: Request, session_id: str, user_id: str, data: SentenceBuilderResult):
+    """Record a sentence builder result"""
+    try:
+        result = sentence_builder_service.record_result(
+            session_id, user_id, data.itemId, data.userTokens, data.isCorrect, data.attempts, data.timeSpent, data.errorType
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error recording result: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/sentence-builder/sessions/{session_id}/complete", tags=["Sentence Builder"])
+@limiter.limit("30/minute")
+async def complete_sentence_session(request: Request, session_id: str, user_id: str, data: Optional[SessionComplete] = None):
+    """Complete a sentence builder session"""
+    try:
+        final_progress = data.progress.dict() if data and data.progress else None
+        result = sentence_builder_service.complete_session(session_id, user_id, final_progress)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error completing session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/sentence-builder/items/{item_id}/hint", tags=["Sentence Builder"])
+@limiter.limit("120/minute")
+async def get_sentence_hint(request: Request, item_id: str, user_id: str):
+    """Get hint for a sentence item"""
+    try:
+        return sentence_builder_service.get_hint(item_id, user_id)
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting hint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/sentence-builder/items/{item_id}/tts", tags=["Sentence Builder"])
+@limiter.limit("120/minute")
+async def get_sentence_tts(request: Request, item_id: str, user_id: str):
+    """Get TTS audio for a sentence item"""
+    try:
+        return sentence_builder_service.get_tts(item_id, user_id)
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting TTS: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/sentence-builder/mistakes", tags=["Sentence Builder"])
+@limiter.limit("60/minute")
+async def get_sentence_mistakes(request: Request, user_id: str, page: int = 1, limit: int = 50):
+    """Get user's sentence builder mistakes"""
+    try:
+        return sentence_builder_service.get_mistakes(user_id, page, limit)
+    except Exception as e:
+        logger.error(f"[SENTENCE_BUILDER] Error getting mistakes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
