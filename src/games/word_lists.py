@@ -4,7 +4,7 @@ from typing import List, Optional, Dict
 
 from supabase import Client
 import logging
-from datetime import datetime
+from src.utils.time_utils import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ class WordListsService:
     def update_word_list(self, list_id: str, user_id: str, updates: dict):
         """Update a word list"""
         try:
-            updates['updated_at'] = datetime.utcnow().isoformat()
+            updates['updated_at'] = utc_now_iso()
             
             response = self.supabase.table('word_lists')\
                 .update(updates)\
@@ -142,7 +142,7 @@ class WordListsService:
             
             # Update word count
             self.supabase.table('word_lists')\
-                .update({"word_count": list_check['word_count'] + 1, "updated_at": datetime.utcnow().isoformat()})\
+                .update({"word_count": list_check['word_count'] + 1, "updated_at": utc_now_iso()})\
                 .eq('id', list_id)\
                 .execute()
             
@@ -159,7 +159,7 @@ class WordListsService:
             if not list_check:
                 raise ValueError("Word list not found or access denied")
             
-            updates['updated_at'] = datetime.utcnow().isoformat()
+            updates['updated_at'] = utc_now_iso()
             
             response = self.supabase.table('words')\
                 .update(updates)\
@@ -188,7 +188,7 @@ class WordListsService:
             
             # Update word count
             self.supabase.table('word_lists')\
-                .update({"word_count": max(0, list_check['word_count'] - 1), "updated_at": datetime.utcnow().isoformat()})\
+                .update({"word_count": max(0, list_check['word_count'] - 1), "updated_at": utc_now_iso()})\
                 .eq('id', list_id)\
                 .execute()
             
@@ -201,7 +201,7 @@ class WordListsService:
         """Toggle favorite status for a word list"""
         try:
             response = self.supabase.table('word_lists')\
-                .update({"is_favorite": is_favorite, "updated_at": datetime.utcnow().isoformat()})\
+                .update({"is_favorite": is_favorite, "updated_at": utc_now_iso()})\
                 .eq('id', list_id)\
                 .eq('user_id', user_id)\
                 .execute()
@@ -223,7 +223,7 @@ class WordListsService:
                 raise ValueError("Word list not found or access denied")
             
             response = self.supabase.table('words')\
-                .update({"is_favorite": is_favorite, "updated_at": datetime.utcnow().isoformat()})\
+                .update({"is_favorite": is_favorite, "updated_at": utc_now_iso()})\
                 .eq('id', word_id)\
                 .eq('list_id', list_id)\
                 .execute()

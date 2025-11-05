@@ -3,8 +3,9 @@
 from typing import List, Optional
 from supabase import Client
 import logging
-from datetime import datetime
 import random
+
+from src.utils.time_utils import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +169,8 @@ class FlashcardsService:
                         "practice_count": new_practice_count,
                         "correct_count": new_correct_count,
                         "accuracy": new_accuracy,
-                        "last_practiced": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
+                        "last_practiced": utc_now_iso(),
+                        "updated_at": utc_now_iso()
                     })\
                     .eq('id', word_id)\
                     .execute()
@@ -197,7 +198,7 @@ class FlashcardsService:
                         "item_id": word_id,
                         "last_error_type": "incorrect",
                         "mistake_count": 1,
-                        "last_attempted_at": datetime.utcnow().isoformat()
+                        "last_attempted_at": utc_now_iso()
                     }, on_conflict="user_id,game_type,item_id")\
                     .execute()
             
@@ -221,7 +222,7 @@ class FlashcardsService:
             
             # Update session
             update_data = {
-                "completed_at": datetime.utcnow().isoformat()
+                "completed_at": utc_now_iso()
             }
             
             if final_progress:

@@ -39,15 +39,13 @@ class AdvancedClozeService:
             List of topics with metadata
         """
         try:
-            # In production, fetch from database
-            # For now, return static catalog matching spec
-            topics = [
-                {"id": "phrasalVerbs", "name": "Phrasal Verbs", "icon": "🔗", "description": "Multi-word verbs with particles"},
-                {"id": "idioms", "name": "Idioms", "icon": "🎭", "description": "Fixed expressions with figurative meaning"},
-                {"id": "register", "name": "Register", "icon": "🎯", "description": "Formal vs informal language"},
-                {"id": "collocations", "name": "Collocations", "icon": "🤝", "description": "Words that commonly go together"},
-                {"id": "academic", "name": "Academic", "icon": "🎓", "description": "Academic writing conventions"}
-            ]
+            response = self.supabase.table('cloze_topics')\
+                .select('id, name, icon, description')\
+                .order('name')\
+                .execute()
+            
+            topics = response.data or []
+            logger.info(f"[ADVANCED_CLOZE] Retrieved {len(topics)} topics")
             return {"topics": topics}
         except Exception as e:
             logger.error(f"[ADVANCED_CLOZE] Error getting topics: {e}", exc_info=True)
@@ -63,17 +61,25 @@ class AdvancedClozeService:
             List of lessons
         """
         try:
-            # In production, query cloze_lessons table
-            # For now, return sample data
-            lessons = [
-                {"id": "pv_business", "title": "Business Phrasal Verbs", "topicId": "phrasalVerbs", "items": 8},
-                {"id": "pv_communication", "title": "Communication Phrasal Verbs", "topicId": "phrasalVerbs", "items": 6},
-                {"id": "idioms_time", "title": "Time Idioms", "topicId": "idioms", "items": 10}
-            ]
+            query = self.supabase.table('cloze_lessons')\
+                .select('id, topic_id, title, item_count')
             
             if topic_id:
-                lessons = [l for l in lessons if l["topicId"] == topic_id]
+                query = query.eq('topic_id', topic_id)
             
+            response = query.order('title').execute()
+            
+            lessons = [
+                {
+                    "id": lesson['id'],
+                    "title": lesson['title'],
+                    "topicId": lesson['topic_id'],
+                    "items": lesson['item_count']
+                }
+                for lesson in (response.data or [])
+            ]
+            
+            logger.info(f"[ADVANCED_CLOZE] Retrieved {len(lessons)} lessons")
             return {"lessons": lessons}
         except Exception as e:
             logger.error(f"[ADVANCED_CLOZE] Error getting lessons: {e}", exc_info=True)
@@ -102,34 +108,52 @@ class AdvancedClozeService:
             Paginated items list
         """
         try:
-            # In production, query cloze_items table with filters
-            # For now, return sample structure
             logger.info(f"[ADVANCED_CLOZE] Fetching items: topic={topic_id}, lesson={lesson_id}, difficulty={difficulty}")
             
-            # Sample item structure
-            items = [
-                {
-                    "id": "ac_101",
-                    "topic": topic_id or "phrasalVerbs",
-                    "lesson": lesson_id or "pv_business",
-                    "difficulty": difficulty or "medium",
-                    "textParts": ["We need to ", " the old policy and ", " a new one."]
-                }
-            ]
+            # Build query with filters
+            query = self.supabase.table('cloze_items').select('*')
             
-            if include_options:
-                items[0].update({
-                    "options": [
-                        ["phase out", "fade out", "face out"],
-                        ["bring up", "set up", "bring in"]
-                    ],
-                    "correct": ["phase out", "bring in"],
-                    "explanation": "\"Phase out\" means gradually stop using; \"bring in\" means introduce."
-                })
+            if topic_id:
+                query = query.eq('topic_id', topic_id)
+            if lesson_id:
+                query = query.eq('lesson_id', lesson_id)
+            if difficulty:
+                query = query.eq('difficulty', difficulty)
+            
+            # Get total count for pagination
+            count_response = query.execute()
+            total = len(count_response.data or [])
+            
+            # Apply pagination
+            offset = (page - 1) * limit
+            query = query.range(offset, offset + limit - 1)
+            
+            response = query.execute()
+            items = []
+            
+            for item in (response.data or []):
+                item_data = {
+                    "id": item['id'],
+                    "topic": item['topic_id'],
+                    "lesson": item['lesson_id'],
+                    "difficulty": item['difficulty'],
+                    "textParts": item['text_parts']
+                }
+                
+                if include_options:
+                    item_data.update({
+                        "options": item['options'],
+                        "correct": item['correct'],
+                        "explanation": item['explanation']
+                    })
+                
+                items.append(item_data)
+            
+            logger.info(f"[ADVANCED_CLOZE] Retrieved {len(items)} items (total: {total})")
             
             return {
                 "data": items,
-                "pagination": {"page": page, "limit": limit, "total": len(items)}
+                "pagination": {"page": page, "limit": limit, "total": total}
             }
         except Exception as e:
             logger.error(f"[ADVANCED_CLOZE] Error getting items: {e}", exc_info=True)
@@ -178,16 +202,31 @@ class AdvancedClozeService:
             reference_id = None
             
             if mode == "topic":
-                # In production: query cloze_items by topic_id and difficulty
                 items = self.get_items(topic_id=topic_id, difficulty=difficulty, limit=limit, include_options=True)["data"]
                 reference_id = topic_id
             elif mode == "lesson":
-                # In production: query cloze_items by lesson_id
                 items = self.get_items(lesson_id=lesson_id, difficulty=difficulty, include_options=True)["data"]
                 reference_id = lesson_id
             elif mode == "custom":
-                # In production: query specific items by IDs
-                items = [{"id": item_id, "textParts": ["Sample ", " text"]} for item_id in selected_item_ids]
+                # Fetch specific items by IDs
+                if selected_item_ids:
+                    query = self.supabase.table('cloze_items')\
+                        .select('*')\
+                        .in_('id', selected_item_ids)
+                    response = query.execute()
+                    items = [
+                        {
+                            "id": item['id'],
+                            "topic": item['topic_id'],
+                            "lesson": item['lesson_id'],
+                            "difficulty": item['difficulty'],
+                            "textParts": item['text_parts'],
+                            "options": item['options'],
+                            "correct": item['correct'],
+                            "explanation": item['explanation']
+                        }
+                        for item in (response.data or [])
+                    ]
                 reference_id = "custom"
             elif mode == "mistakes":
                 # Fetch user's mistakes
@@ -199,8 +238,24 @@ class AdvancedClozeService:
                 
                 mistake_ids = [m['item_id'] for m in (mistakes_response.data or [])]
                 if mistake_ids:
-                    # In production: fetch these items
-                    items = [{"id": item_id, "textParts": ["Review ", " item"]} for item_id in mistake_ids[:limit]]
+                    # Fetch actual items for these mistakes
+                    query = self.supabase.table('cloze_items')\
+                        .select('*')\
+                        .in_('id', mistake_ids[:limit])
+                    response = query.execute()
+                    items = [
+                        {
+                            "id": item['id'],
+                            "topic": item['topic_id'],
+                            "lesson": item['lesson_id'],
+                            "difficulty": item['difficulty'],
+                            "textParts": item['text_parts'],
+                            "options": item['options'],
+                            "correct": item['correct'],
+                            "explanation": item['explanation']
+                        }
+                        for item in (response.data or [])
+                    ]
                 reference_id = "mistakes"
             
             if not items:
@@ -458,11 +513,21 @@ class AdvancedClozeService:
             Hint text
         """
         try:
-            # In production: fetch from cloze_items table
-            # For now: return sample hint
+            # Fetch item from database
+            item_response = self.supabase.table('cloze_items')\
+                .select('explanation')\
+                .eq('id', item_id)\
+                .execute()
+            
+            if not item_response.data:
+                raise ValueError("Item not found")
+            
+            # Use explanation as hint
+            hint = item_response.data[0].get('explanation', 'No hint available')
+            
             return {
                 "itemId": item_id,
-                "hint": "Business phrasal verbs often involve 'phase out' (gradual removal) and 'bring in' (introduction)."
+                "hint": hint
             }
         except Exception as e:
             logger.error(f"[ADVANCED_CLOZE] Error getting hint: {e}", exc_info=True)
@@ -492,16 +557,24 @@ class AdvancedClozeService:
             
             mistakes = mistakes_response.data or []
             
-            # In production: enrich with item details
-            data = [
-                {
-                    "itemId": m['item_id'],
-                    "topic": "phrasalVerbs",
+            # Enrich with item details
+            data = []
+            for m in mistakes:
+                item_id = m['item_id']
+                # Fetch item details
+                item_response = self.supabase.table('cloze_items')\
+                    .select('topic_id')\
+                    .eq('id', item_id)\
+                    .execute()
+                
+                topic = item_response.data[0]['topic_id'] if item_response.data else "unknown"
+                
+                data.append({
+                    "itemId": item_id,
+                    "topic": topic,
                     "selectedAnswers": [],
                     "lastAnsweredAt": m['last_attempted_at']
-                }
-                for m in mistakes
-            ]
+                })
             
             return {
                 "data": data,

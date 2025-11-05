@@ -14,8 +14,8 @@ Key features:
 from typing import List, Optional, Dict
 from supabase import Client
 import logging
-from datetime import datetime
 import random
+from src.utils.time_utils import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -38,20 +38,13 @@ class GrammarChallengeService:
             List of categories
         """
         try:
-            # In production, fetch from database
-            # For now, return static catalog matching spec
-            categories = [
-                {"id": "tense", "name": "Tenses"},
-                {"id": "agreement", "name": "Agreement"},
-                {"id": "modifier", "name": "Modifiers"},
-                {"id": "preposition", "name": "Prepositions"},
-                {"id": "article", "name": "Articles"},
-                {"id": "conditional", "name": "Conditionals"},
-                {"id": "collocation", "name": "Collocations"},
-                {"id": "parallelism", "name": "Parallelism"},
-                {"id": "punctuation", "name": "Punctuation"},
-                {"id": "wordChoice", "name": "Word Choice"}
-            ]
+            response = self.supabase.table('grammar_categories')\
+                .select('id, name')\
+                .order('name')\
+                .execute()
+            
+            categories = response.data or []
+            logger.info(f"[GRAMMAR_CHALLENGE] Retrieved {len(categories)} categories")
             return {"categories": categories}
         except Exception as e:
             logger.error(f"[GRAMMAR_CHALLENGE] Error getting categories: {e}", exc_info=True)
@@ -67,17 +60,25 @@ class GrammarChallengeService:
             List of lessons
         """
         try:
-            # In production, query grammar_lessons table
-            # For now, return sample data
-            lessons = [
-                {"id": "tense_pp_sp", "title": "Past Perfect vs Simple Past", "categoryId": "tense", "questions": 8},
-                {"id": "tense_present", "title": "Present Tenses", "categoryId": "tense", "questions": 10},
-                {"id": "agreement_sv", "title": "Subject-Verb Agreement", "categoryId": "agreement", "questions": 12}
-            ]
+            query = self.supabase.table('grammar_lessons')\
+                .select('id, category_id, title, question_count')
             
             if category_id:
-                lessons = [l for l in lessons if l["categoryId"] == category_id]
+                query = query.eq('category_id', category_id)
             
+            response = query.order('title').execute()
+            
+            lessons = [
+                {
+                    "id": lesson['id'],
+                    "title": lesson['title'],
+                    "categoryId": lesson['category_id'],
+                    "questions": lesson['question_count']
+                }
+                for lesson in (response.data or [])
+            ]
+            
+            logger.info(f"[GRAMMAR_CHALLENGE] Retrieved {len(lessons)} lessons")
             return {"lessons": lessons}
         except Exception as e:
             logger.error(f"[GRAMMAR_CHALLENGE] Error getting lessons: {e}", exc_info=True)
@@ -108,27 +109,50 @@ class GrammarChallengeService:
         try:
             logger.info(f"[GRAMMAR_CHALLENGE] Fetching questions: category={category_id}, lesson={lesson_id}, difficulty={difficulty}")
             
-            # Sample question structure
-            questions = [
-                {
-                    "id": "gc_q_101",
-                    "category": category_id or "tense",
-                    "difficulty": difficulty or "medium",
-                    "lesson": lesson_id or "tense_pp_sp",
-                    "prompt": "By the time we arrived, the film ____."
-                }
-            ]
+            # Build query with filters
+            query = self.supabase.table('grammar_questions').select('*')
             
-            if include_options:
-                questions[0].update({
-                    "options": ["has started", "had started", "was starting", "has been starting"],
-                    "correctIndex": 1,
-                    "explanation": "Past perfect shows an action completed before another past action."
-                })
+            if category_id:
+                query = query.eq('category_id', category_id)
+            if lesson_id:
+                query = query.eq('lesson_id', lesson_id)
+            if difficulty:
+                query = query.eq('difficulty', difficulty)
+            
+            # Get total count
+            count_response = query.execute()
+            total = len(count_response.data or [])
+            
+            # Apply pagination
+            offset = (page - 1) * limit
+            query = query.range(offset, offset + limit - 1)
+            
+            response = query.execute()
+            questions = []
+            
+            for q in (response.data or []):
+                question_data = {
+                    "id": q['id'],
+                    "category": q['category_id'],
+                    "difficulty": q['difficulty'],
+                    "lesson": q['lesson_id'],
+                    "prompt": q['prompt']
+                }
+                
+                if include_options:
+                    question_data.update({
+                        "options": q['options'],
+                        "correctIndex": q['correct_index'],
+                        "explanation": q['explanation']
+                    })
+                
+                questions.append(question_data)
+            
+            logger.info(f"[GRAMMAR_CHALLENGE] Retrieved {len(questions)} questions (total: {total})")
             
             return {
                 "data": questions,
-                "pagination": {"page": page, "limit": limit, "total": len(questions)}
+                "pagination": {"page": page, "limit": limit, "total": total}
             }
         except Exception as e:
             logger.error(f"[GRAMMAR_CHALLENGE] Error getting questions: {e}", exc_info=True)
@@ -185,8 +209,25 @@ class GrammarChallengeService:
                 questions = self.get_questions(lesson_id=lesson_id, difficulty=difficulty, include_options=True)["data"]
                 reference_id = lesson_id
             elif mode == "custom":
-                # In production: query specific questions by IDs
-                questions = [{"id": q_id, "prompt": "Sample question?"} for q_id in selected_question_ids]
+                # Fetch specific questions by IDs
+                if selected_question_ids:
+                    query = self.supabase.table('grammar_questions')\
+                        .select('*')\
+                        .in_('id', selected_question_ids)
+                    response = query.execute()
+                    questions = [
+                        {
+                            "id": q['id'],
+                            "category": q['category_id'],
+                            "difficulty": q['difficulty'],
+                            "lesson": q['lesson_id'],
+                            "prompt": q['prompt'],
+                            "options": q['options'],
+                            "correctIndex": q['correct_index'],
+                            "explanation": q['explanation']
+                        }
+                        for q in (response.data or [])
+                    ]
                 reference_id = "custom"
             elif mode == "mistakes":
                 # Fetch user's mistakes
@@ -198,8 +239,24 @@ class GrammarChallengeService:
                 
                 mistake_ids = [m['item_id'] for m in (mistakes_response.data or [])]
                 if mistake_ids:
-                    # In production: fetch these questions
-                    questions = [{"id": q_id, "prompt": "Review question?"} for q_id in mistake_ids[:limit]]
+                    # Fetch actual questions for these mistakes
+                    query = self.supabase.table('grammar_questions')\
+                        .select('*')\
+                        .in_('id', mistake_ids[:limit])
+                    response = query.execute()
+                    questions = [
+                        {
+                            "id": q['id'],
+                            "category": q['category_id'],
+                            "difficulty": q['difficulty'],
+                            "lesson": q['lesson_id'],
+                            "prompt": q['prompt'],
+                            "options": q['options'],
+                            "correctIndex": q['correct_index'],
+                            "explanation": q['explanation']
+                        }
+                        for q in (response.data or [])
+                    ]
                 reference_id = "mistakes"
             
             if not questions:
@@ -367,7 +424,7 @@ class GrammarChallengeService:
                         "item_id": question_id,
                         "last_error_type": "incorrect_answer",
                         "mistake_count": 1,
-                        "last_attempted_at": datetime.utcnow().isoformat()
+                        "last_attempted_at": utc_now_iso()
                     }, on_conflict="user_id,game_type,item_id")\
                     .execute()
             
@@ -465,7 +522,7 @@ class GrammarChallengeService:
             
             session = session_response.data[0]
             
-            update_data = {"completed_at": datetime.utcnow().isoformat()}
+            update_data = {"completed_at": utc_now_iso()}
             
             if final_progress:
                 update_data.update({
@@ -518,11 +575,21 @@ class GrammarChallengeService:
             Hint text
         """
         try:
-            # In production: fetch from grammar_questions table
-            # For now: return sample hint
+            # Fetch question from database
+            question_response = self.supabase.table('grammar_questions')\
+                .select('explanation')\
+                .eq('id', question_id)\
+                .execute()
+            
+            if not question_response.data:
+                raise ValueError("Question not found")
+            
+            # Use explanation as hint
+            hint = question_response.data[0].get('explanation', 'No hint available')
+            
             return {
                 "questionId": question_id,
-                "hint": "'By the time' usually pairs with Past Perfect to show prior completion."
+                "hint": hint
             }
         except Exception as e:
             logger.error(f"[GRAMMAR_CHALLENGE] Error getting hint: {e}", exc_info=True)
@@ -552,16 +619,24 @@ class GrammarChallengeService:
             
             mistakes = mistakes_response.data or []
             
-            # In production: enrich with question details
-            data = [
-                {
-                    "questionId": m['item_id'],
-                    "category": "tense",
+            # Enrich with question details
+            data = []
+            for m in mistakes:
+                question_id = m['item_id']
+                # Fetch question details
+                question_response = self.supabase.table('grammar_questions')\
+                    .select('category_id')\
+                    .eq('id', question_id)\
+                    .execute()
+                
+                category = question_response.data[0]['category_id'] if question_response.data else "unknown"
+                
+                data.append({
+                    "questionId": question_id,
+                    "category": category,
                     "lastSelected": 0,
                     "lastAnsweredAt": m['last_attempted_at']
-                }
-                for m in mistakes
-            ]
+                })
             
             return {
                 "data": data,

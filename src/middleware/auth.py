@@ -3,9 +3,11 @@
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
+from datetime import datetime, timedelta
 from typing import Optional
 import os
 import logging
+
 from src.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 class AuthService:
     """Authentication service for JWT token management"""
@@ -67,7 +70,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Security(securi
         "name": payload.get("name")
     }
 
-def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Security(security, auto_error=False)) -> Optional[dict]:
+def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Security(optional_security)) -> Optional[dict]:
     """Optional authentication - returns None if no token provided"""
     if credentials is None:
         return None

@@ -15,8 +15,8 @@ Key features:
 from typing import List, Optional, Dict
 from supabase import Client
 import logging
-from datetime import datetime
 import random
+from src.utils.time_utils import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +39,13 @@ class SentenceBuilderService:
             List of topics
         """
         try:
-            # In production, fetch from database
-            # For now, return static catalog matching spec
-            topics = [
-                {"id": "phrasal_verbs", "name": "Phrasal Verbs"},
-                {"id": "formal_register", "name": "Formal Register"},
-                {"id": "idioms", "name": "Idioms"},
-                {"id": "collocations", "name": "Collocations"}
-            ]
+            response = self.supabase.table('sentence_topics')\
+                .select('id, name')\
+                .order('name')\
+                .execute()
+            
+            topics = response.data or []
+            logger.info(f"[SENTENCE_BUILDER] Retrieved {len(topics)} topics")
             return {"topics": topics}
         except Exception as e:
             logger.error(f"[SENTENCE_BUILDER] Error getting topics: {e}", exc_info=True)
@@ -62,17 +61,25 @@ class SentenceBuilderService:
             List of lessons
         """
         try:
-            # In production, query sentence_lessons table
-            # For now, return sample data
-            lessons = [
-                {"id": "fr_1", "title": "Formal Register 1", "topicId": "formal_register", "items": 8},
-                {"id": "fr_2", "title": "Formal Register 2", "topicId": "formal_register", "items": 10},
-                {"id": "pv_business", "title": "Business Phrasal Verbs", "topicId": "phrasal_verbs", "items": 12}
-            ]
+            query = self.supabase.table('sentence_lessons')\
+                .select('id, topic_id, title, item_count')
             
             if topic_id:
-                lessons = [l for l in lessons if l["topicId"] == topic_id]
+                query = query.eq('topic_id', topic_id)
             
+            response = query.order('title').execute()
+            
+            lessons = [
+                {
+                    "id": lesson['id'],
+                    "title": lesson['title'],
+                    "topicId": lesson['topic_id'],
+                    "items": lesson['item_count']
+                }
+                for lesson in (response.data or [])
+            ]
+            
+            logger.info(f"[SENTENCE_BUILDER] Retrieved {len(lessons)} lessons")
             return {"lessons": lessons}
         except Exception as e:
             logger.error(f"[SENTENCE_BUILDER] Error getting lessons: {e}", exc_info=True)
@@ -103,30 +110,51 @@ class SentenceBuilderService:
         try:
             logger.info(f"[SENTENCE_BUILDER] Fetching items: topic={topic_id}, lesson={lesson_id}, difficulty={difficulty}")
             
-            # Sample item structure
-            items = [
-                {
-                    "id": "sb_it_101",
-                    "english": "The CEO announced that the company would mitigate its impact.",
-                    "translation": "...",
-                    "topic": topic_id or "formal_register",
-                    "lesson": lesson_id or "fr_1",
-                    "difficulty": difficulty or "medium"
-                }
-            ]
+            # Build query with filters
+            query = self.supabase.table('sentence_items').select('*')
             
-            if include_tokens:
-                items[0].update({
-                    "tokens": ["The", "CEO", "announced", "that", "the", "company", "would", "mitigate", "its", "impact", "."],
-                    "accepted": [
-                        ["The", "CEO", "announced", "that", "the", "company", "would", "mitigate", "its", "impact", "."]
-                    ],
-                    "distractors": []
-                })
+            if topic_id:
+                query = query.eq('topic_id', topic_id)
+            if lesson_id:
+                query = query.eq('lesson_id', lesson_id)
+            if difficulty:
+                query = query.eq('difficulty', difficulty)
+            
+            # Get total count
+            count_response = query.execute()
+            total = len(count_response.data or [])
+            
+            # Apply pagination
+            offset = (page - 1) * limit
+            query = query.range(offset, offset + limit - 1)
+            
+            response = query.execute()
+            items = []
+            
+            for item in (response.data or []):
+                item_data = {
+                    "id": item['id'],
+                    "english": item['english'],
+                    "translation": item['translation'],
+                    "topic": item['topic_id'],
+                    "lesson": item['lesson_id'],
+                    "difficulty": item['difficulty']
+                }
+                
+                if include_tokens:
+                    item_data.update({
+                        "tokens": item['tokens'],
+                        "accepted": item['accepted'],
+                        "distractors": item.get('distractors', [])
+                    })
+                
+                items.append(item_data)
+            
+            logger.info(f"[SENTENCE_BUILDER] Retrieved {len(items)} items (total: {total})")
             
             return {
                 "data": items,
-                "pagination": {"page": page, "limit": limit, "total": len(items)}
+                "pagination": {"page": page, "limit": limit, "total": total}
             }
         except Exception as e:
             logger.error(f"[SENTENCE_BUILDER] Error getting items: {e}", exc_info=True)
@@ -183,8 +211,26 @@ class SentenceBuilderService:
                 items = self.get_items(lesson_id=lesson_id, difficulty=difficulty, include_tokens=True)["data"]
                 reference_id = lesson_id
             elif mode == "custom":
-                # In production: query specific items by IDs
-                items = [{"id": item_id, "english": "Sample sentence.", "tokens": ["Sample", "sentence", "."]} for item_id in selected_item_ids]
+                # Fetch specific items by IDs
+                if selected_item_ids:
+                    query = self.supabase.table('sentence_items')\
+                        .select('*')\
+                        .in_('id', selected_item_ids)
+                    response = query.execute()
+                    items = [
+                        {
+                            "id": item['id'],
+                            "english": item['english'],
+                            "translation": item['translation'],
+                            "topic": item['topic_id'],
+                            "lesson": item['lesson_id'],
+                            "difficulty": item['difficulty'],
+                            "tokens": item['tokens'],
+                            "accepted": item['accepted'],
+                            "distractors": item.get('distractors', [])
+                        }
+                        for item in (response.data or [])
+                    ]
                 reference_id = "custom"
             elif mode == "mistakes":
                 # Fetch user's mistakes
@@ -196,8 +242,25 @@ class SentenceBuilderService:
                 
                 mistake_ids = [m['item_id'] for m in (mistakes_response.data or [])]
                 if mistake_ids:
-                    # In production: fetch these items
-                    items = [{"id": item_id, "english": "Review sentence.", "tokens": ["Review", "sentence", "."]} for item_id in mistake_ids[:limit]]
+                    # Fetch actual items for these mistakes
+                    query = self.supabase.table('sentence_items')\
+                        .select('*')\
+                        .in_('id', mistake_ids[:limit])
+                    response = query.execute()
+                    items = [
+                        {
+                            "id": item['id'],
+                            "english": item['english'],
+                            "translation": item['translation'],
+                            "topic": item['topic_id'],
+                            "lesson": item['lesson_id'],
+                            "difficulty": item['difficulty'],
+                            "tokens": item['tokens'],
+                            "accepted": item['accepted'],
+                            "distractors": item.get('distractors', [])
+                        }
+                        for item in (response.data or [])
+                    ]
                 reference_id = "mistakes"
             
             if not items:
@@ -393,7 +456,7 @@ class SentenceBuilderService:
                         "item_id": item_id,
                         "last_error_type": error_type or "word_order",
                         "mistake_count": 1,
-                        "last_attempted_at": datetime.utcnow().isoformat()
+                        "last_attempted_at": utc_now_iso()
                     }, on_conflict="user_id,game_type,item_id")\
                     .execute()
             
@@ -430,7 +493,7 @@ class SentenceBuilderService:
             
             session = session_response.data[0]
             
-            update_data = {"completed_at": datetime.utcnow().isoformat()}
+            update_data = {"completed_at": utc_now_iso()}
             
             if final_progress:
                 update_data.update({
@@ -483,11 +546,22 @@ class SentenceBuilderService:
             Hint text
         """
         try:
-            # In production: fetch from sentence_items table
-            # For now: return sample hint
+            # Fetch item from database
+            item_response = self.supabase.table('sentence_items')\
+                .select('english, translation')\
+                .eq('id', item_id)\
+                .execute()
+            
+            if not item_response.data:
+                raise ValueError("Item not found")
+            
+            # Use translation as hint
+            item = item_response.data[0]
+            hint = f"Translation: {item.get('translation', 'No hint available')}"
+            
             return {
                 "itemId": item_id,
-                "hint": "Focus on formal verbs like 'announce' and 'mitigate'."
+                "hint": hint
             }
         except Exception as e:
             logger.error(f"[SENTENCE_BUILDER] Error getting hint: {e}", exc_info=True)
