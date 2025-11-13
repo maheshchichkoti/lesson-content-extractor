@@ -120,8 +120,10 @@ class SupabaseClient:
                 logger.error(f"Failed to initialize Supabase: {e}")
                 self.client = None
     
-    def fetch_transcript(self, user_id: str, teacher_id: str, class_id: str, date: str) -> Optional[Dict]:
-        """Fetch transcript from zoom_summaries table"""
+    def fetch_transcript(self, user_id: str, teacher_id: str, class_id: str, date: str,
+                        meeting_time: Optional[str] = None, start_time: Optional[str] = None,
+                        end_time: Optional[str] = None) -> Optional[Dict]:
+        """Fetch transcript from zoom_summaries table with optional time filtering"""
         if not self.client:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -129,19 +131,24 @@ class SupabaseClient:
             )
         
         try:
-            logger.info(f"Fetching transcript: user={user_id}, teacher={teacher_id}, class={class_id}, date={date}")
+            logger.info(f"Fetching transcript: user={user_id}, teacher={teacher_id}, class={class_id}, date={date}, time={meeting_time}")
             
-            response = (
+            query = (
                 self.client.table('zoom_summaries')
                 .select('*')
                 .eq('user_id', user_id)
                 .eq('teacher_id', teacher_id)
                 .eq('class_id', class_id)
                 .eq('meeting_date', date)
-                .order('processing_completed_at', desc=True)
-                .limit(1)
-                .execute()
             )
+            
+            # Add time filtering if provided
+            if meeting_time:
+                query = query.eq('meeting_time', meeting_time)
+            elif start_time and end_time:
+                query = query.gte('meeting_time', start_time).lte('meeting_time', end_time)
+            
+            response = query.order('processing_completed_at', desc=True).limit(1).execute()
             
             if not response.data:
                 return None
@@ -772,6 +779,9 @@ class ZoomTranscriptInput(BaseModel):
     teacher_id: str = Field(..., description="Teacher identifier")
     class_id: str = Field(..., description="Class identifier")
     date: str = Field(..., description="Date in YYYY-MM-DD format", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    meeting_time: Optional[str] = Field(None, description="Meeting time in HH:MM format (optional)")
+    start_time: Optional[str] = Field(None, description="Start time filter in HH:MM format (optional)")
+    end_time: Optional[str] = Field(None, description="End time filter in HH:MM format (optional)")
     lesson_number: Optional[int] = Field(1, ge=1, description="Lesson number (defaults to 1)")
     
     @field_validator('date')
@@ -999,7 +1009,10 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             user_id=input_data.user_id,
             teacher_id=input_data.teacher_id,
             class_id=input_data.class_id,
-            date=input_data.date
+            date=input_data.date,
+            meeting_time=input_data.meeting_time,
+            start_time=input_data.start_time,
+            end_time=input_data.end_time
         )
         
         if not transcript_data:
@@ -3148,8 +3161,9 @@ async def get_mistakes(
     """Get user mistakes"""
     try:
         query = """
-            SELECT user_id, game_type, item_id, last_error_type,
-                   mistake_count, last_attempted_at, item_details
+            SELECT user_id, game_type, item_id, item_type,
+                   user_answer, correct_answer, mistake_type,
+                   mistake_count, last_attempted_at
             FROM user_mistakes
             WHERE user_id = %s
         """
@@ -3165,8 +3179,6 @@ async def get_mistakes(
         mistakes = execute_query(query, tuple(params))
         
         for m in mistakes:
-            if m.get('item_details') and isinstance(m['item_details'], str):
-                m['item_details'] = json.loads(m['item_details'])
             if m.get('last_attempted_at'):
                 m['last_attempted_at'] = m['last_attempted_at'].isoformat()
         
