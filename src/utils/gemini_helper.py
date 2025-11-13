@@ -32,7 +32,8 @@ class GeminiHelper:
         if self.api_key and GENAI_AVAILABLE:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-pro')
+                model_name = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.5-flash-lite-preview-09-2025")
+                self.model = genai.GenerativeModel(model_name)
                 self.enabled = True
                 print(f"Google Gemini AI initialized (prompt style: {prompt_style})")
                 logger.info(f"Gemini AI enabled with {prompt_style} prompts")
@@ -282,6 +283,82 @@ Transcript:
 
 Return ONLY a JSON array like:
 [{{"word": "...", "context": "...", "difficulty": "..."}}]"""
+    
+    def extract_sentences_with_ai(self, transcript: str, max_sentences: int = 10) -> List[Dict[str, str]]:
+        """Extract quality practice sentences using Gemini AI"""
+        
+        if not self.enabled or not self.model:
+            logger.warning("Gemini AI not available for sentence extraction")
+            return []
+        
+        try:
+            prompt = f"""Extract {max_sentences} high-quality English sentences from this lesson transcript that are suitable for language practice exercises.
+
+Transcript:
+{transcript[:4000]}
+
+Select sentences that:
+1. Are grammatically correct and complete
+2. Are 8-20 words long (not too short, not too long)
+3. Contain useful vocabulary or grammar patterns
+4. Are clear and natural-sounding
+5. Represent different topics/contexts from the lesson
+
+For each sentence provide:
+- "sentence": the complete sentence
+- "difficulty": "beginner", "intermediate", or "advanced"
+- "grammar_focus": main grammar point (e.g., "present simple", "past tense", "prepositions")
+
+Format your response EXACTLY as a JSON array:
+[
+  {{"sentence": "I wake up at 7 AM every morning.", "difficulty": "beginner", "grammar_focus": "present simple"}},
+  {{"sentence": "Yesterday I went to the market with my mother.", "difficulty": "intermediate", "grammar_focus": "past simple"}}
+]
+
+Return ONLY the JSON array with no extra text."""
+
+            response = self.model.generate_content(prompt)
+            
+            if not response or not response.text:
+                logger.warning("Empty response from Gemini sentence extraction")
+                return []
+            
+            # Parse JSON response
+            import json
+            import re
+            
+            text = response.text.strip()
+            # Remove markdown code blocks if present
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+            
+            sentences_data = json.loads(text)
+            
+            if not isinstance(sentences_data, list):
+                logger.warning("Gemini returned non-list for sentences")
+                return []
+            
+            # Convert to expected format
+            result = []
+            for item in sentences_data[:max_sentences]:
+                if isinstance(item, dict) and 'sentence' in item:
+                    result.append({
+                        'sentence': item['sentence'],
+                        'source': 'gemini_ai',
+                        'quality_score': 9,
+                        'difficulty': item.get('difficulty', 'beginner'),
+                        'grammar_focus': item.get('grammar_focus', '')
+                    })
+            
+            logger.info(f"[OK] Gemini AI extracted {len(result)} sentences")
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Gemini sentence JSON: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Gemini AI sentence extraction failed: {e}")
+            return []
     
     def generate_lesson_feedback(self, transcript: str) -> Dict[str, any]:
         """Generate comprehensive lesson feedback using AI"""

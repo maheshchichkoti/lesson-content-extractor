@@ -10,16 +10,12 @@ from typing import Dict, Optional
 
 from src.extractors import VocabularyExtractor, MistakeExtractor, SentenceExtractor
 from src.generators import FillInBlankGenerator, FlashcardGenerator, SpellingGenerator
-from src.generators.advanced_cloze_generator import AdvancedClozeGenerator
-from src.generators.grammar_question_generator import GrammarQuestionGenerator
-from src.generators.sentence_builder_generator import SentenceBuilderGenerator
 from src.utils import QualityChecker
-from src.utils.game_populator import GamePopulator
 
 class LessonProcessor:
     """Main orchestrator for lesson processing"""
     
-    def __init__(self, populate_games=False):
+    def __init__(self):
         self.vocab_extractor = VocabularyExtractor()
         self.mistake_extractor = MistakeExtractor()
         self.sentence_extractor = SentenceExtractor()
@@ -28,22 +24,7 @@ class LessonProcessor:
         self.flashcard_generator = FlashcardGenerator()
         self.spelling_generator = SpellingGenerator()
         
-        # New game generators
-        self.cloze_generator = AdvancedClozeGenerator()
-        self.grammar_generator = GrammarQuestionGenerator()
-        self.sentence_builder_generator = SentenceBuilderGenerator()
-        
         self.quality_checker = QualityChecker()
-        
-        # Game populator (optional)
-        self.populate_games = populate_games
-        self.game_populator = None
-        if populate_games:
-            try:
-                self.game_populator = GamePopulator()
-            except Exception as e:
-                print(f"[WARN] Game populator not available: {e}")
-                self.populate_games = False
     
     def process_lesson(self, transcript: str, lesson_number: int) -> Dict:
         """Process with exercise count limits"""
@@ -137,120 +118,6 @@ class LessonProcessor:
             import traceback
             traceback.print_exc()
             return {'fill_in_blank': [], 'flashcards': [], 'spelling': []}
-    
-    def populate_game_tables(self, exercises: Dict, lesson_number: int, 
-                            user_id: str, zoom_summary_id: int = None) -> Dict:
-        """
-        Populate all game tables from extracted content
-        
-        Args:
-            exercises: Dict with extracted content (vocabulary, mistakes, sentences, etc.)
-            lesson_number: Lesson number for ID generation
-            user_id: User ID for word lists
-            zoom_summary_id: Optional zoom_summaries ID for flashcard migration
-            
-        Returns:
-            Dict with counts of items inserted
-        """
-        if not self.populate_games or not self.game_populator:
-            print("[SKIP] Game population disabled")
-            return {}
-        
-        print(f"\n{'='*60}")
-        print(f"[GAME POPULATION] Populating game tables for Lesson {lesson_number}")
-        print(f"{'='*60}\n")
-        
-        results = {
-            'word_lists': 0,
-            'cloze_items': 0,
-            'grammar_questions': 0,
-            'sentence_items': 0
-        }
-        
-        try:
-            # 1. Populate word lists from zoom_summaries (if ID provided)
-            if zoom_summary_id:
-                print("[1/4] Migrating flashcards/spelling to word_lists...")
-                list_id = self.game_populator.populate_word_lists_from_zoom_summary(
-                    zoom_summary_id, user_id
-                )
-                if list_id:
-                    results['word_lists'] = 1
-            
-            # 2. Generate and populate Advanced Cloze items
-            print("\n[2/4] Generating Advanced Cloze items...")
-            vocabulary = exercises.get('vocabulary', [])
-            sentences = exercises.get('sentences', [])
-            
-            if sentences:
-                topic_id = 'academic'  # Default topic, can be customized
-                lesson_id = f'lesson_{lesson_number}'
-                
-                cloze_items = self.cloze_generator.generate(
-                    sentences, vocabulary, topic_id, lesson_id
-                )
-                
-                if cloze_items:
-                    count = self.game_populator.populate_cloze_items(cloze_items)
-                    results['cloze_items'] = count
-                    print(f"   [OK] Inserted {count} cloze items")
-                else:
-                    print("   [SKIP] No cloze items generated")
-            
-            # 3. Generate and populate Grammar Challenge questions
-            print("\n[3/4] Generating Grammar Challenge questions...")
-            mistakes = exercises.get('mistakes', [])
-            
-            if mistakes:
-                category_id = 'tense'  # Default category, can be customized
-                lesson_id = f'lesson_{lesson_number}'
-                
-                questions = self.grammar_generator.generate(
-                    mistakes, category_id, lesson_id
-                )
-                
-                if questions:
-                    count = self.game_populator.populate_grammar_questions(questions)
-                    results['grammar_questions'] = count
-                    print(f"   [OK] Inserted {count} grammar questions")
-                else:
-                    print("   [SKIP] No grammar questions generated")
-            
-            # 4. Generate and populate Sentence Builder items
-            print("\n[4/4] Generating Sentence Builder items...")
-            
-            if sentences:
-                topic_id = 'formal_register'  # Default topic, can be customized
-                lesson_id = f'lesson_{lesson_number}'
-                
-                sentence_items = self.sentence_builder_generator.generate(
-                    sentences, topic_id, lesson_id
-                )
-                
-                if sentence_items:
-                    count = self.game_populator.populate_sentence_items(sentence_items)
-                    results['sentence_items'] = count
-                    print(f"   [OK] Inserted {count} sentence items")
-                else:
-                    print("   [SKIP] No sentence items generated")
-            
-            # Summary
-            print(f"\n{'='*60}")
-            print("[GAME POPULATION SUMMARY]")
-            print(f"{'='*60}")
-            print(f"   Word Lists: {results['word_lists']}")
-            print(f"   Cloze Items: {results['cloze_items']}")
-            print(f"   Grammar Questions: {results['grammar_questions']}")
-            print(f"   Sentence Items: {results['sentence_items']}")
-            print(f"{'='*60}\n")
-            
-            return results
-            
-        except Exception as e:
-            print(f"[ERROR] Game population failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return results
     
     def save_to_csv(self, exercises: dict, lesson_number: int, output_dir: Path) -> bool:
         """Save exercises to CSV files with error handling"""

@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: tulkka_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tulkka9}
+      MYSQL_USER: ${MYSQL_USER:-tulkka_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-tulkka_password}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/mysql_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./sql/seed_game_data.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tulkka_network
+
+  # FastAPI Application
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tulkka_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./api.log:/app/api.log
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tulkka_network
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  tulkka_network:
+    driver: bridge

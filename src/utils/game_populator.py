@@ -37,7 +37,7 @@ class GamePopulator:
             response = self.supabase.table('zoom_summaries')\
                 .select('*')\
                 .eq('id', zoom_summary_id)\
-                .execute()
+                .execute() 
             
             if not response.data:
                 print(f"[ERROR] Zoom summary {zoom_summary_id} not found")

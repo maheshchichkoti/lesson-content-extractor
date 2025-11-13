@@ -81,14 +81,15 @@ def exercise_word_lists() -> WordListArtifacts:
     step("Create Word List")
     list_payload = {
         "name": "QA Auto List",
-        "description": "Created by automated end-to-end test"
+        "description": "Created by automated end-to-end test",
+        "class_id": "test_class_123"
     }
-    created_list = req("POST", "/v1/word-lists", params={"user_id": USER_ID}, json=list_payload)
+    created_list = req("POST", "/api/v1/word-lists", params={"user_id": USER_ID}, json=list_payload)
     list_id = created_list["id"]
     pause()
 
     step("List Word Lists")
-    lists = req("GET", "/v1/word-lists", params={"user_id": USER_ID, "page": 1, "limit": 10})
+    lists = req("GET", "/api/v1/word-lists", params={"user_id": USER_ID, "class_id": "test_class_123", "limit": 10})
     ensure(any(entry["id"] == list_id for entry in lists.get("data", [])), "New word list not returned in listing")
     pause()
 
@@ -98,7 +99,7 @@ def exercise_word_lists() -> WordListArtifacts:
         "translation": "पायथन",
         "notes": "Automated test fixture"
     }
-    created_word = req("POST", f"/v1/word-lists/{list_id}/words", params={"user_id": USER_ID}, json=word_payload)
+    created_word = req("POST", f"/api/v1/word-lists/{list_id}/words", params={"user_id": USER_ID}, json=word_payload)
     word_id = created_word["id"]
     pause()
 
@@ -107,65 +108,65 @@ def exercise_word_lists() -> WordListArtifacts:
         "translation": "पायथन (Python)",
         "notes": "Updated via automated test"
     }
-    req("PATCH", f"/v1/word-lists/{list_id}/words/{word_id}", params={"user_id": USER_ID}, json=update_payload)
+    req("PATCH", f"/api/v1/word-lists/{list_id}/words/{word_id}", params={"user_id": USER_ID}, json=update_payload)
     pause()
 
     step("Start Flashcards Session")
     flash_session = req(
         "POST",
-        "/v1/flashcards/sessions",
+        "/api/v1/sessions/start",
         params={"user_id": USER_ID},
-        json={"wordListId": list_id, "selectedWordIds": [word_id]}
+        json={"user_id": USER_ID, "game_type": "flashcards", "class_id": "test_class_123", "item_ids": [word_id]}
     )
     flash_session_id = flash_session["id"]
     pause()
 
     step("Get Flashcard Session")
-    session_details = req("GET", f"/v1/flashcards/sessions/{flash_session_id}", params={"user_id": USER_ID})
+    session_details = req("GET", f"/api/v1/sessions/{flash_session_id}", params={"user_id": USER_ID})
     ensure(session_details["id"] == flash_session_id, "Session ID mismatch")
     pause()
 
     step("Record Flashcard Result")
     req(
         "POST",
-        f"/v1/flashcards/sessions/{flash_session_id}/results",
+        f"/api/v1/sessions/{flash_session_id}/result",
         params={"user_id": USER_ID},
-        json={"wordId": word_id, "isCorrect": True, "attempts": 1, "timeSpent": 4}
+        json={"item_id": word_id, "is_correct": True, "attempts": 1, "time_spent_ms": 4000}
     )
     pause()
 
     step("Complete Flashcard Session")
     req(
         "POST",
-        f"/v1/flashcards/sessions/{flash_session_id}/complete",
+        f"/api/v1/sessions/{flash_session_id}/complete",
         params={"user_id": USER_ID},
-        json={"progress": {"current": 1, "total": 1, "correct": 1, "incorrect": 0}}
+        json={"final_score": 100.0, "correct_count": 1, "incorrect_count": 0}
     )
     pause()
 
     step("Flashcard Stats")
-    stats = req("GET", "/v1/flashcards/stats/me", params={"user_id": USER_ID})
+    stats = req("GET", f"/api/v1/progress/{USER_ID}", params={"game_type": "flashcards"})
     ensure("totals" in stats, "Flashcard stats response missing 'totals'")
     pause()
 
     step("Start Spelling Session")
     spelling_session = req(
         "POST",
-        "/v1/spelling/sessions",
+        "/api/v1/sessions/start",
         params={"user_id": USER_ID},
-        json={"wordListId": list_id, "selectedWordIds": [word_id], "shuffle": False}
+        json={"user_id": USER_ID, "game_type": "spelling_bee", "class_id": "test_class_123", "item_ids": [word_id]}
     )
     spelling_session_id = spelling_session["id"]
     pause()
 
     step("Get Spelling Session")
-    spelling_details = req("GET", f"/v1/spelling/sessions/{spelling_session_id}", params={"user_id": USER_ID})
+    spelling_details = req("GET", f"/api/v1/sessions/{spelling_session_id}", params={"user_id": USER_ID})
     ensure(spelling_details["id"] == spelling_session_id, "Spelling session ID mismatch")
     pause()
 
     step("Get Pronunciation")
     try:
-        req("GET", f"/v1/spelling/pronunciations/{word_id}", params={"user_id": USER_ID})
+        req("GET", f"/api/v1/spelling/pronunciations/{word_id}", params={"user_id": USER_ID})
     except requests.HTTPError as e:
         if e.response.status_code not in {403, 404}:
             raise
@@ -175,14 +176,13 @@ def exercise_word_lists() -> WordListArtifacts:
     step("Record Spelling Result")
     req(
         "POST",
-        f"/v1/spelling/sessions/{spelling_session_id}/results",
+        f"/api/v1/sessions/{spelling_session_id}/result",
         params={"user_id": USER_ID},
         json={
-            "wordId": word_id,
-            "userAnswer": "python",
-            "isCorrect": True,
+            "item_id": word_id,
+            "is_correct": True,
             "attempts": 1,
-            "timeSpent": 5
+            "time_spent_ms": 5000
         }
     )
     pause()
@@ -190,9 +190,9 @@ def exercise_word_lists() -> WordListArtifacts:
     step("Complete Spelling Session")
     req(
         "POST",
-        f"/v1/spelling/sessions/{spelling_session_id}/complete",
+        f"/api/v1/sessions/{spelling_session_id}/complete",
         params={"user_id": USER_ID},
-        json={"progress": {"current": 1, "total": 1, "correct": 1, "incorrect": 0}}
+        json={"final_score": 100.0, "correct_count": 1, "incorrect_count": 0}
     )
     pause()
 
@@ -201,24 +201,35 @@ def exercise_word_lists() -> WordListArtifacts:
 
 def exercise_advanced_cloze(user_id: str) -> None:
     step("Advanced Cloze Catalog")
-    topics = req("GET", "/v1/advanced-cloze/topics")
+    topics = req("GET", "/api/v1/cloze/topics")
     topic_list = topics.get("topics", [])
     ensure(topic_list, "No Advanced Cloze topics available. Seed cloze_topics table.")
     topic_id = topic_list[0]["id"]
     pause()
 
-    lessons = req("GET", "/v1/advanced-cloze/lessons", params={"topicId": topic_id})
-    lesson_list = lessons.get("lessons", [])
-    ensure(lesson_list, f"No lessons for Advanced Cloze topic '{topic_id}'. Seed cloze_lessons table.")
-    lesson_id = lesson_list[0]["id"]
+    chosen_topic = None
+    lesson_id = None
+    lesson_list: List[Dict[str, Any]] = []
+
+    for topic in topic_list:
+        lesson_response = req("GET", "/api/v1/cloze/lessons", params={"topic_id": topic["id"]})
+        candidate_lessons = lesson_response.get("lessons", [])
+        if candidate_lessons:
+            chosen_topic = topic
+            lesson_list = candidate_lessons
+            lesson_id = lesson_list[0]["id"]
+            break
+
+    ensure(chosen_topic is not None, "No lessons for any Advanced Cloze topic. Seed cloze_lessons table.")
+    topic_id = chosen_topic["id"]
     pause()
 
     items = req(
         "GET",
-        "/v1/advanced-cloze/items",
-        params={"lessonId": lesson_id, "include": "options", "limit": 20}
+        "/api/v1/cloze/items",
+        params={"topic_id": topic_id, "lesson_id": lesson_id, "limit": 20}
     )
-    item_list = items.get("data", [])
+    item_list = items.get("items", [])
     ensure(item_list, f"No cloze items for lesson '{lesson_id}'. Seed cloze_items table.")
     first_item = item_list[0]
     pause()
@@ -226,35 +237,34 @@ def exercise_advanced_cloze(user_id: str) -> None:
     step("Start Advanced Cloze Session")
     session = req(
         "POST",
-        "/v1/advanced-cloze/sessions",
+        "/api/v1/sessions/start",
         params={"user_id": user_id},
         json={
-            "mode": "lesson",
-            "topicId": topic_id,
-            "lessonId": lesson_id,
-            "difficulty": first_item.get("difficulty"),
-            "limit": min(5, len(item_list))
+            "user_id": user_id,
+            "game_type": "advanced_cloze",
+            "class_id": "test_class_123",
+            "reference_id": topic_id,
+            "item_ids": [item["id"] for item in item_list[:5]]
         }
     )
     session_id = session["id"]
     pause()
 
     step("Get Advanced Cloze Session")
-    session_details = req("GET", f"/v1/advanced-cloze/sessions/{session_id}", params={"user_id": user_id, "include": "options"})
+    session_details = req("GET", f"/api/v1/sessions/{session_id}", params={"user_id": user_id})
     ensure(session_details["id"] == session_id, "Cloze session ID mismatch")
     pause()
 
     step("Record Advanced Cloze Result")
     req(
         "POST",
-        f"/v1/advanced-cloze/sessions/{session_id}/results",
+        f"/api/v1/sessions/{session_id}/result",
         params={"user_id": user_id},
         json={
-            "itemId": first_item["id"],
-            "selectedAnswers": first_item.get("correct", []),
-            "isCorrect": True,
+            "item_id": first_item["id"],
+            "is_correct": True,
             "attempts": 1,
-            "timeSpent": 7
+            "time_spent_ms": 7000
         }
     )
     pause()
@@ -262,27 +272,27 @@ def exercise_advanced_cloze(user_id: str) -> None:
     step("Complete Advanced Cloze Session")
     req(
         "POST",
-        f"/v1/advanced-cloze/sessions/{session_id}/complete",
+        f"/api/v1/sessions/{session_id}/complete",
         params={"user_id": user_id},
-        json={"progress": {"current": 1, "total": session["progress"]["total"], "correct": 1, "incorrect": 0}}
+        json={"final_score": 100.0, "correct_count": 1, "incorrect_count": 0}
     )
     pause()
 
     step("Advanced Cloze Hint & Mistakes")
-    req("GET", f"/v1/advanced-cloze/items/{first_item['id']}/hint", params={"user_id": user_id})
-    req("GET", "/v1/advanced-cloze/mistakes", params={"user_id": user_id, "page": 1, "limit": 10})
+    req("GET", f"/api/v1/cloze/items/{first_item['id']}/hint", params={"user_id": user_id})
+    req("GET", f"/api/v1/mistakes/{user_id}", params={"game_type": "advanced_cloze"})
     pause()
 
 
 def exercise_grammar_challenge(user_id: str) -> None:
     step("Grammar Challenge Catalog")
-    categories = req("GET", "/v1/grammar-challenge/categories")
+    categories = req("GET", "/api/v1/grammar/categories")
     category_list = categories.get("categories", [])
     ensure(category_list, "No grammar categories available. Seed grammar_categories table.")
     category_id = category_list[0]["id"]
     pause()
 
-    lessons = req("GET", "/v1/grammar-challenge/lessons", params={"categoryId": category_id})
+    lessons = req("GET", "/api/v1/grammar/lessons", params={"category_id": category_id})
     lesson_list = lessons.get("lessons", [])
     ensure(lesson_list, f"No lessons for grammar category '{category_id}'. Seed grammar_lessons table.")
     lesson_id = lesson_list[0]["id"]
@@ -290,10 +300,10 @@ def exercise_grammar_challenge(user_id: str) -> None:
 
     questions = req(
         "GET",
-        "/v1/grammar-challenge/questions",
-        params={"lessonId": lesson_id, "include": "options", "limit": 20}
+        "/api/v1/grammar/questions",
+        params={"category_id": category_id, "limit": 20}
     )
-    question_list = questions.get("data", [])
+    question_list = questions.get("questions", [])
     ensure(question_list, f"No grammar questions for lesson '{lesson_id}'. Seed grammar_questions table.")
     first_question = question_list[0]
     pause()
@@ -301,35 +311,34 @@ def exercise_grammar_challenge(user_id: str) -> None:
     step("Start Grammar Challenge Session")
     session = req(
         "POST",
-        "/v1/grammar-challenge/sessions",
+        "/api/v1/sessions/start",
         params={"user_id": user_id},
         json={
-            "mode": "lesson",
-            "categoryId": category_id,
-            "lessonId": lesson_id,
-            "difficulty": first_question.get("difficulty"),
-            "limit": min(5, len(question_list))
+            "user_id": user_id,
+            "game_type": "grammar_challenge",
+            "class_id": "test_class_123",
+            "reference_id": category_id,
+            "item_ids": [q["id"] for q in question_list[:5]]
         }
     )
     session_id = session["id"]
     pause()
 
     step("Get Grammar Session")
-    session_details = req("GET", f"/v1/grammar-challenge/sessions/{session_id}", params={"user_id": user_id, "include": "options"})
+    session_details = req("GET", f"/api/v1/sessions/{session_id}", params={"user_id": user_id})
     ensure(session_details["id"] == session_id, "Grammar session ID mismatch")
     pause()
 
     step("Record Grammar Result")
     req(
         "POST",
-        f"/v1/grammar-challenge/sessions/{session_id}/results",
+        f"/api/v1/sessions/{session_id}/result",
         params={"user_id": user_id},
         json={
-            "questionId": first_question["id"],
-            "selectedAnswer": first_question.get("correctIndex", 0),
-            "isCorrect": True,
+            "item_id": first_question["id"],
+            "is_correct": True,
             "attempts": 1,
-            "timeSpent": 6
+            "time_spent_ms": 6000
         }
     )
     pause()
@@ -339,36 +348,41 @@ def exercise_grammar_challenge(user_id: str) -> None:
         second = question_list[1]
         req(
             "POST",
-            f"/v1/grammar-challenge/sessions/{session_id}/skip",
+            f"/api/v1/sessions/{session_id}/result",
             params={"user_id": user_id},
-            json={"questionId": second["id"]}
+            json={
+                "item_id": second["id"],
+                "is_correct": False,
+                "attempts": 1,
+                "time_spent_ms": 1000
+            }
         )
         pause()
 
     step("Complete Grammar Session")
     req(
         "POST",
-        f"/v1/grammar-challenge/sessions/{session_id}/complete",
+        f"/api/v1/sessions/{session_id}/complete",
         params={"user_id": user_id},
-        json={"progress": {"current": 2, "total": session["progress"]["total"], "correct": 1, "incorrect": 1}}
+        json={"final_score": 50.0, "correct_count": 1, "incorrect_count": 1}
     )
     pause()
 
     step("Grammar Hint & Mistakes")
-    req("GET", f"/v1/grammar-challenge/questions/{first_question['id']}/hint", params={"user_id": user_id})
-    req("GET", "/v1/grammar-challenge/mistakes", params={"user_id": user_id, "page": 1, "limit": 10})
+    req("GET", f"/api/v1/grammar/questions/{first_question['id']}/hint", params={"user_id": user_id})
+    req("GET", f"/api/v1/mistakes/{user_id}", params={"game_type": "grammar_challenge"})
     pause()
 
 
 def exercise_sentence_builder(user_id: str) -> None:
     step("Sentence Builder Catalog")
-    topics = req("GET", "/v1/sentence-builder/topics")
+    topics = req("GET", "/api/v1/sentence/topics")
     topic_list = topics.get("topics", [])
     ensure(topic_list, "No sentence builder topics available. Seed sentence_topics table.")
     topic_id = topic_list[0]["id"]
     pause()
 
-    lessons = req("GET", "/v1/sentence-builder/lessons", params={"topicId": topic_id})
+    lessons = req("GET", "/api/v1/sentence/lessons", params={"topic_id": topic_id})
     lesson_list = lessons.get("lessons", [])
     ensure(lesson_list, f"No lessons for sentence topic '{topic_id}'. Seed sentence_lessons table.")
     lesson_id = lesson_list[0]["id"]
@@ -376,10 +390,10 @@ def exercise_sentence_builder(user_id: str) -> None:
 
     items = req(
         "GET",
-        "/v1/sentence-builder/items",
-        params={"lessonId": lesson_id, "include": "tokens", "limit": 20}
+        "/api/v1/sentence/items",
+        params={"topic_id": topic_id, "limit": 20}
     )
-    item_list = items.get("data", [])
+    item_list = items.get("items", [])
     ensure(item_list, f"No sentence items for lesson '{lesson_id}'. Seed sentence_items table.")
     first_item = item_list[0]
     pause()
@@ -387,21 +401,21 @@ def exercise_sentence_builder(user_id: str) -> None:
     step("Start Sentence Builder Session")
     session = req(
         "POST",
-        "/v1/sentence-builder/sessions",
+        "/api/v1/sessions/start",
         params={"user_id": user_id},
         json={
-            "mode": "lesson",
-            "topicId": topic_id,
-            "lessonId": lesson_id,
-            "difficulty": first_item.get("difficulty"),
-            "limit": min(5, len(item_list))
+            "user_id": user_id,
+            "game_type": "sentence_builder",
+            "class_id": "test_class_123",
+            "reference_id": topic_id,
+            "item_ids": [item["id"] for item in item_list[:5]]
         }
     )
     session_id = session["id"]
     pause()
 
     step("Get Sentence Builder Session")
-    session_details = req("GET", f"/v1/sentence-builder/sessions/{session_id}", params={"user_id": user_id, "include": "items"})
+    session_details = req("GET", f"/api/v1/sessions/{session_id}", params={"user_id": user_id})
     ensure(session_details["id"] == session_id, "Sentence session ID mismatch")
     pause()
 
@@ -412,15 +426,13 @@ def exercise_sentence_builder(user_id: str) -> None:
     step("Record Sentence Builder Result")
     req(
         "POST",
-        f"/v1/sentence-builder/sessions/{session_id}/results",
+        f"/api/v1/sessions/{session_id}/result",
         params={"user_id": user_id},
         json={
-            "itemId": first_item["id"],
-            "userTokens": user_tokens,
-            "isCorrect": True,
+            "item_id": first_item["id"],
+            "is_correct": True,
             "attempts": 1,
-            "timeSpent": 8,
-            "errorType": "word_order"
+            "time_spent_ms": 8000
         }
     )
     pause()
@@ -428,20 +440,20 @@ def exercise_sentence_builder(user_id: str) -> None:
     step("Complete Sentence Builder Session")
     req(
         "POST",
-        f"/v1/sentence-builder/sessions/{session_id}/complete",
+        f"/api/v1/sessions/{session_id}/complete",
         params={"user_id": user_id},
-        json={"progress": {"current": 1, "total": session["progress"]["total"], "correct": 1, "incorrect": 0}}
+        json={"final_score": 100.0, "correct_count": 1, "incorrect_count": 0}
     )
     pause()
 
     step("Sentence Builder Hint & Mistakes")
-    req("GET", f"/v1/sentence-builder/items/{first_item['id']}/hint", params={"user_id": user_id})
-    req("GET", "/v1/sentence-builder/mistakes", params={"user_id": user_id, "page": 1, "limit": 10})
+    req("GET", f"/api/v1/sentence/items/{first_item['id']}/hint", params={"user_id": user_id})
+    req("GET", f"/api/v1/mistakes/{user_id}", params={"game_type": "sentence_builder"})
     pause()
 
     step("Sentence Builder TTS")
     try:
-        req("GET", f"/v1/sentence-builder/items/{first_item['id']}/tts", params={"user_id": user_id})
+        req("GET", f"/api/v1/sentence/items/{first_item['id']}/tts", params={"user_id": user_id})
     except requests.HTTPError as e:
         if e.response.status_code not in {404, 500}:
             raise
@@ -451,8 +463,8 @@ def exercise_sentence_builder(user_id: str) -> None:
 
 def cleanup_word_list(artifacts: WordListArtifacts) -> None:
     step("Cleanup Test Data")
-    req("DELETE", f"/v1/word-lists/{artifacts.list_id}/words/{artifacts.word_id}", params={"user_id": USER_ID})
-    req("DELETE", f"/v1/word-lists/{artifacts.list_id}", params={"user_id": USER_ID})
+    req("DELETE", f"/api/v1/word-lists/{artifacts.list_id}/words/{artifacts.word_id}", params={"user_id": USER_ID})
+    req("DELETE", f"/api/v1/word-lists/{artifacts.list_id}", params={"user_id": USER_ID})
 
 
 def main() -> None:
@@ -464,7 +476,7 @@ def main() -> None:
         call_optional_game("Sentence Builder", exercise_sentence_builder, USER_ID)
 
         step("User Aggregate Stats")
-        req("GET", "/v1/user/stats", params={"user_id": USER_ID})
+        req("GET", "/api/v1/stats/me", params={"user_id": USER_ID})
 
         print("\n==============================================")
         print(" All documented game endpoints verified successfully")
