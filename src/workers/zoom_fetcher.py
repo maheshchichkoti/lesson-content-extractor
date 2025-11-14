@@ -7,6 +7,7 @@ import os
 import time
 import logging
 import requests
+import base64
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
@@ -22,6 +23,64 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 
+class ZoomTokenManager:
+    """Manages Zoom OAuth tokens with auto-refresh"""
+    
+    def __init__(self):
+        self.client_id = os.getenv('ZOOM_CLIENT_ID', '')
+        self.client_secret = os.getenv('ZOOM_CLIENT_SECRET', '')
+        self.access_token = os.getenv('ZOOM_ACCESS_TOKEN', '')
+        self.refresh_token = os.getenv('ZOOM_REFRESH_TOKEN', '')
+        self.token_expires_at = datetime.now()
+    
+    def get_token(self) -> str:
+        """Get valid access token, auto-refresh if expired"""
+        # If token is still valid, return it
+        if self.access_token and datetime.now() < self.token_expires_at:
+            return self.access_token
+        
+        # Token expired, refresh it
+        if not self.refresh_token:
+            logger.warning("No refresh token available. Using existing access token.")
+            return self.access_token
+        
+        try:
+            logger.info("🔄 Refreshing Zoom access token...")
+            
+            credentials = f"{self.client_id}:{self.client_secret}"
+            encoded = base64.b64encode(credentials.encode()).decode()
+            
+            response = requests.post(
+                "https://zoom.us/oauth/token",
+                headers={
+                    "Authorization": f"Basic {encoded}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token
+                }
+            )
+            
+            if response.status_code == 200:
+                tokens = response.json()
+                self.access_token = tokens['access_token']
+                self.refresh_token = tokens.get('refresh_token', self.refresh_token)
+                # Set expiry 5 minutes before actual expiry for safety
+                expires_in = tokens.get('expires_in', 3600)
+                self.token_expires_at = datetime.now() + timedelta(seconds=expires_in - 300)
+                
+                logger.info(f"✅ Zoom token refreshed successfully (expires in {expires_in}s)")
+                return self.access_token
+            else:
+                logger.error(f"❌ Failed to refresh token: {response.status_code} - {response.text}")
+                return self.access_token
+                
+        except Exception as e:
+            logger.error(f"❌ Error refreshing Zoom token: {e}")
+            return self.access_token
+
+
 class ZoomRecordingFetcher:
     """Automatically fetches and transcribes Zoom recordings"""
     
@@ -33,10 +92,10 @@ class ZoomRecordingFetcher:
             poll_interval: How often to check for new recordings (seconds, default 5 minutes)
         """
         self.poll_interval = poll_interval
-        self.zoom_access_token = os.getenv('ZOOM_ACCESS_TOKEN')
+        self.token_manager = ZoomTokenManager()
         self.assemblyai_key = os.getenv('ASSEMBLYAI_API_KEY')
         
-        if not self.zoom_access_token:
+        if not self.token_manager.access_token:
             logger.error("ZOOM_ACCESS_TOKEN not set!")
         
         if not self.assemblyai_key:
@@ -57,8 +116,11 @@ class ZoomRecordingFetcher:
         Returns:
             List of recording objects
         """
-        if not self.zoom_access_token:
-            logger.error("Cannot fetch recordings: ZOOM_ACCESS_TOKEN not set")
+        # Get fresh token (auto-refreshes if expired)
+        access_token = self.token_manager.get_token()
+        
+        if not access_token:
+            logger.error("Cannot fetch recordings: No valid Zoom access token")
             return []
         
         # Default: fetch recordings from last 24 hours
@@ -72,7 +134,7 @@ class ZoomRecordingFetcher:
             # Get list of users (teachers)
             users_url = "https://api.zoom.us/v2/users"
             headers = {
-                "Authorization": f"Bearer {self.zoom_access_token}",
+                "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json"
             }
             
@@ -117,10 +179,11 @@ class ZoomRecordingFetcher:
     
     def check_if_already_processed(self, meeting_id: str) -> bool:
         """Check if recording already exists in Supabase"""
-        if not supabase_client:
-            return False
-        
         try:
+            if not supabase_client:
+                logger.error("Cannot query Supabase: Supabase client not initialized")
+                return False
+
             response = supabase_client.table('zoom_summaries')\
                 .select('id')\
                 .eq('meeting_id', meeting_id)\
@@ -132,6 +195,52 @@ class ZoomRecordingFetcher:
         except Exception as e:
             logger.error(f"Error checking if recording exists: {e}")
             return False
+    
+    def download_transcript_file(self, download_url: str, access_token: str) -> Optional[str]:
+        """
+        Download transcript file (VTT/TXT) from Zoom
+        
+        Args:
+            download_url: URL to download transcript
+            access_token: Zoom access token
+            
+        Returns:
+            Transcript content as string or None
+        """
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            response = requests.get(download_url, headers=headers)
+            response.raise_for_status()
+            
+            logger.info(f"✅ Downloaded transcript file")
+            return response.text
+            
+        except Exception as e:
+            logger.error(f"Error downloading transcript: {e}")
+            return None
+    
+    def clean_vtt_transcript(self, vtt_content: str) -> str:
+        """
+        Clean VTT transcript format to plain text
+        
+        Args:
+            vtt_content: Raw VTT content
+            
+        Returns:
+            Cleaned transcript text
+        """
+        lines = []
+        for line in vtt_content.split('\n'):
+            line = line.strip()
+            # Skip VTT headers, timestamps, and empty lines
+            if (line and 
+                not line.startswith('WEBVTT') and
+                not line.startswith('NOTE') and
+                not '-->' in line and
+                not line.isdigit()):
+                lines.append(line)
+        
+        return '\n'.join(lines)
     
     def download_recording(self, download_url: str, access_token: str) -> Optional[str]:
         """
@@ -193,21 +302,25 @@ class ZoomRecordingFetcher:
             logger.error(f"Error transcribing audio: {e}", exc_info=True)
             return None
     
-    def store_transcript(self, meeting_data: Dict, transcript: str) -> bool:
+    def store_transcript(self, meeting_data: Dict, transcript: str, 
+                        transcription_source: str = 'zoom_native_transcript',
+                        transcription_service: str = 'Zoom') -> bool:
         """
         Store transcript in Supabase
         
         Args:
             meeting_data: Zoom meeting metadata
             transcript: Transcribed text
+            transcription_source: Source of transcription
+            transcription_service: Service used for transcription
             
         Returns:
             True if successful
         """
-        if not supabase_client.client:
+        if not supabase_client:
             logger.error("Cannot store transcript: Supabase client not initialized")
             return False
-        
+
         try:
             # Extract metadata
             meeting_id = meeting_data.get('id')
@@ -241,9 +354,9 @@ class ZoomRecordingFetcher:
                 'teacher_email': teacher_email,
                 'transcript': transcript,
                 'transcript_length': len(transcript),
-                'transcript_source': transcript_source,
+                'transcript_source': transcription_source,
                 'transcription_service': transcription_service,
-                'processing_mode': processing_mode,
+                'processing_mode': 'auto_fetch',
                 'transcription_status': 'completed',
                 'transcription_completed_at': datetime.utcnow().isoformat(),
                 'created_at': datetime.utcnow().isoformat()
@@ -320,43 +433,84 @@ class ZoomRecordingFetcher:
                 logger.warning(f"No recording files found for meeting {meeting_id}")
                 return False
             
-            # Find audio/video file
-            audio_file = None
+            # PRIORITY 1: Check for Zoom native transcript (VTT/TXT) - FASTEST & FREE
+            transcript_file = None
             for file in recording_files:
-                file_type = file.get('file_type', '').lower()
-                if file_type in ['mp4', 'm4a', 'mp3']:
-                    audio_file = file
+                rec_type = (file.get('recording_type') or '').lower()
+                file_type = (file.get('file_type') or '').lower()
+                
+                if 'audio_transcript' in rec_type or 'transcript' in rec_type:
+                    transcript_file = file
+                    break
+                if file_type in ['vtt', 'txt']:
+                    transcript_file = file
                     break
             
-            if not audio_file:
-                logger.warning(f"No audio file found for meeting {meeting_id}")
-                return False
-            
-            download_url = audio_file.get('download_url')
-            if not download_url:
-                logger.warning(f"No download URL for meeting {meeting_id}")
-                return False
-            
-            # Download recording
-            local_file = self.download_recording(download_url, self.zoom_access_token)
-            if not local_file:
-                return False
-            
-            # Transcribe
-            transcript = self.transcribe_audio(local_file)
-            
-            # Clean up downloaded file
-            try:
-                os.remove(local_file)
-                logger.info(f"Cleaned up {local_file}")
-            except:
-                pass
-            
-            if not transcript:
-                return False
+            # If transcript exists, download it directly (no transcription needed!)
+            if transcript_file:
+                logger.info(f"✅ Found Zoom native transcript for {meeting_id}")
+                download_url = transcript_file.get('download_url')
+                if download_url:
+                    access_token = self.token_manager.get_token()
+                    transcript_content = self.download_transcript_file(download_url, access_token)
+                    if transcript_content:
+                        transcript = self.clean_vtt_transcript(transcript_content)
+                        transcription_source = 'zoom_native_transcript'
+                        transcription_service = 'Zoom'
+                    else:
+                        logger.warning(f"Failed to download transcript for {meeting_id}")
+                        return False
+                else:
+                    logger.warning(f"No download URL for transcript {meeting_id}")
+                    return False
+            else:
+                # PRIORITY 2: No transcript - find audio file for AssemblyAI transcription
+                logger.info(f"⚠️ No native transcript, will transcribe audio for {meeting_id}")
+                audio_file = None
+                for file in recording_files:
+                    rec_type = file.get('recording_type', '')
+                    file_type = (file.get('file_type') or '').lower()
+                    
+                    # Prefer audio_only, then m4a/mp3 (NOT mp4 video!)
+                    if rec_type == 'audio_only':
+                        audio_file = file
+                        break
+                    if file_type in ['m4a', 'mp3', 'wav', 'aac']:
+                        audio_file = file
+                        break
+                
+                if not audio_file:
+                    logger.warning(f"No audio file found for meeting {meeting_id}")
+                    return False
+                
+                download_url = audio_file.get('download_url')
+                if not download_url:
+                    logger.warning(f"No download URL for meeting {meeting_id}")
+                    return False
+                
+                # Download audio (get fresh token)
+                access_token = self.token_manager.get_token()
+                local_file = self.download_recording(download_url, access_token)
+                if not local_file:
+                    return False
+                
+                # Transcribe with AssemblyAI
+                transcript = self.transcribe_audio(local_file)
+                transcription_source = 'assemblyai'
+                transcription_service = 'AssemblyAI'
+                
+                # Clean up downloaded file
+                try:
+                    os.remove(local_file)
+                    logger.info(f"Cleaned up {local_file}")
+                except:
+                    pass
+                
+                if not transcript:
+                    return False
             
             # Store in Supabase
-            success = self.store_transcript(meeting, transcript)
+            success = self.store_transcript(meeting, transcript, transcription_source, transcription_service)
             
             if success:
                 logger.info(f"✅ Successfully processed recording {meeting_id}")
