@@ -3,7 +3,7 @@
 Automatically transforms raw lesson transcripts into structured learning exercises for language learning applications.
 
 ## 🎯 Features
-
+    
 - **Smart Content Extraction**: Identifies vocabulary, mistakes, and practice sentences
 - **Multi-Type Exercise Generation**:
   - Fill-in-the-blank with realistic distractors
