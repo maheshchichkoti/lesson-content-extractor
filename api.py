@@ -40,7 +40,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler(
-            'api.log', 
+            'api.log',
             maxBytes=10*1024*1024,  # 10MB per file
             backupCount=5  # Keep 5 backup files
         )
@@ -82,19 +82,19 @@ app.add_middleware(
 async def log_requests(request: Request, call_next):
     """Log all incoming requests"""
     start_time = utc_now()
-    
+
     # Log request
     logger.info(f"-> {request.method} {request.url.path} from {request.client.host}")
-    
+
     # Process request
     response = await call_next(request)
-    
+
     # Calculate duration
     duration = (utc_now() - start_time).total_seconds()
-    
+
     # Log response
     logger.info(f"<- {request.method} {request.url.path} - Status: {response.status_code} - Duration: {duration:.3f}s")
-    
+
     return response
 
 # Initialize processor
@@ -104,11 +104,11 @@ logger.info("LessonProcessor initialized")
 # Supabase Client
 class SupabaseClient:
     """Client for fetching Zoom transcripts from Supabase"""
-    
+
     def __init__(self):
         self.url = os.getenv('SUPABASE_URL')
         self.key = os.getenv('SUPABASE_KEY')
-        
+
         if not self.url or not self.key:
             logger.warning("Supabase credentials not found. Zoom integration disabled.")
             self.client = None
@@ -119,7 +119,7 @@ class SupabaseClient:
             except Exception as e:
                 logger.error(f"Failed to initialize Supabase: {e}")
                 self.client = None
-    
+
     def fetch_transcript(self, user_id: str, teacher_id: str, class_id: str, date: str,
                         meeting_time: Optional[str] = None, start_time: Optional[str] = None,
                         end_time: Optional[str] = None) -> Optional[Dict]:
@@ -129,10 +129,10 @@ class SupabaseClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Supabase client not initialized. Check credentials."
             )
-        
+
         try:
             logger.info(f"Fetching transcript: user={user_id}, teacher={teacher_id}, class={class_id}, date={date}, time={meeting_time}")
-            
+
             query = (
                 self.client.table('zoom_summaries')
                 .select('*')
@@ -141,30 +141,30 @@ class SupabaseClient:
                 .eq('class_id', class_id)
                 .eq('meeting_date', date)
             )
-            
+
             # Add time filtering if provided
             if meeting_time:
                 query = query.eq('meeting_time', meeting_time)
             elif start_time and end_time:
                 query = query.gte('meeting_time', start_time).lte('meeting_time', end_time)
-            
+
             response = query.order('processing_completed_at', desc=True).limit(1).execute()
-            
+
             if not response.data:
                 return None
-            
+
             transcript_data = response.data[0]
             logger.info(f"Transcript found (ID: {transcript_data.get('id')}, length: {transcript_data.get('transcript_length', 0)})")
             return transcript_data
-            
+
         except Exception as e:
             logger.error(f"Error fetching transcript: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Database error: {str(e)}"
             )
-    
-    def store_exercises(self, user_id: str, teacher_id: str, class_id: str, 
+
+    def store_exercises(self, user_id: str, teacher_id: str, class_id: str,
                        lesson_number: int, exercises: Dict, zoom_summary_id: Optional[int] = None) -> Dict:
         """Store generated exercises in lesson_exercises table"""
         if not self.client:
@@ -172,15 +172,15 @@ class SupabaseClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Supabase client not initialized. Check credentials."
             )
-        
+
         try:
             # Calculate quality score
             total_exercises = (
-                len(exercises.get('fill_in_blank', [])) + 
-                len(exercises.get('flashcards', [])) + 
+                len(exercises.get('fill_in_blank', [])) +
+                len(exercises.get('flashcards', [])) +
                 len(exercises.get('spelling', []))
             )
-            
+
             exercise_data = {
                 'zoom_summary_id': zoom_summary_id,
                 'user_id': user_id,
@@ -193,22 +193,22 @@ class SupabaseClient:
                 'quality_score': total_exercises,
                 'generated_at': utc_now_iso()
             }
-            
+
             response = self.client.table('lesson_exercises').insert(exercise_data).execute()
-            
+
             if response.data:
                 logger.info(f"Exercises stored successfully (ID: {response.data[0].get('id')})")
                 return response.data[0]
             else:
                 raise Exception("No data returned from insert")
-                
+
         except Exception as e:
             logger.error(f"Error storing exercises: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to store exercises: {str(e)}"
             )
-    
+
     def get_exercises(self, class_id: str, user_id: Optional[str] = None) -> List[Dict]:
         """Retrieve exercises for a class"""
         if not self.client:
@@ -216,25 +216,25 @@ class SupabaseClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Supabase client not initialized. Check credentials."
             )
-        
+
         try:
             query = self.client.table('lesson_exercises').select('*').eq('class_id', class_id)
-            
+
             if user_id:
                 query = query.eq('user_id', user_id)
-            
+
             response = query.order('generated_at', desc=True).execute()
-            
+
             logger.info(f"Retrieved {len(response.data)} exercise sets for class {class_id}")
             return response.data
-            
+
         except Exception as e:
             logger.error(f"Error retrieving exercises: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to retrieve exercises: {str(e)}"
             )
-    
+
     def health_check(self) -> bool:
         """Check Supabase connection"""
         if not self.client:
@@ -298,10 +298,10 @@ def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fet
     """Helper to execute MySQL queries"""
     conn = get_mysql_conn()
     cursor = conn.cursor(dictionary=True)
-    
+
     try:
         cursor.execute(query, params or ())
-        
+
         if fetch_one:
             result = cursor.fetchone()
         elif fetch_all:
@@ -310,11 +310,11 @@ def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fet
             # For INSERT/UPDATE/DELETE, commit and return affected rows
             conn.commit()
             result = cursor.rowcount
-        
+
         cursor.close()
         conn.close()
         return result
-        
+
     except MySQLError as e:
         conn.rollback()
         cursor.close()
@@ -360,25 +360,25 @@ class ZoomTokenManager:
         self.access_token = os.getenv('ZOOM_ACCESS_TOKEN', '')
         self.refresh_token = os.getenv('ZOOM_REFRESH_TOKEN', '')
         self.token_expires_at = datetime.now()
-    
+
     def get_token(self) -> str:
         """Get valid access token, auto-refresh if expired"""
         # If token is still valid, return it
         if self.access_token and datetime.now() < self.token_expires_at:
             return self.access_token
-        
+
         # Token expired, refresh it
         if not self.refresh_token:
             logger.warning("No refresh token available. Using existing access token.")
             return self.access_token
-        
+
         try:
             logger.info(" Refreshing Zoom access token...")
-            
+
             import base64
             credentials = f"{self.client_id}:{self.client_secret}"
             encoded = base64.b64encode(credentials.encode()).decode()
-            
+
             response = requests.post(
                 "https://zoom.us/oauth/token",
                 headers={
@@ -390,7 +390,7 @@ class ZoomTokenManager:
                     "refresh_token": self.refresh_token
                 }
             )
-            
+
             if response.status_code == 200:
                 tokens = response.json()
                 self.access_token = tokens['access_token']
@@ -398,13 +398,13 @@ class ZoomTokenManager:
                 # Set expiry 5 minutes before actual expiry for safety
                 expires_in = tokens.get('expires_in', 3600)
                 self.token_expires_at = datetime.now() + timedelta(seconds=expires_in - 300)
-                
+
                 logger.info(f"[OK] Zoom token refreshed successfully (expires in {expires_in}s)")
                 return self.access_token
             else:
                 logger.error(f"Failed to refresh token: {response.status_code} - {response.text}")
                 return self.access_token
-                
+
         except Exception as e:
             logger.error(f"Error refreshing Zoom token: {e}")
             return self.access_token
@@ -425,7 +425,7 @@ if ASSEMBLYAI_API_KEY:
     logger.info("[OK] AssemblyAI initialized successfully")
 else:
     logger.warning("[WARNING] ASSEMBLYAI_API_KEY not found. Audio transcription will be disabled.")
-    
+
 # Zoom Helper Functions
 def validate_time(time_str: str) -> Optional[str]:
     """Validate and format time string to HH:MM format."""
@@ -461,18 +461,18 @@ def is_time_in_range(meeting_time: str, start_time: Optional[str], end_time: Opt
     """Check if meeting time falls within the specified range."""
     if not start_time or not end_time:
         return True
-    
+
     meeting_time_str = get_utc_time_from_iso(meeting_time)
     if not meeting_time_str:
         return False
-    
+
     meeting_minutes = time_to_minutes(meeting_time_str)
     start_minutes = time_to_minutes(start_time)
     end_minutes = time_to_minutes(end_time)
-    
+
     if None in (meeting_minutes, start_minutes, end_minutes):
         return False
-    
+
     if end_minutes < start_minutes:
         return meeting_minutes >= start_minutes or meeting_minutes < end_minutes
     else:
@@ -483,11 +483,11 @@ def has_audio_transcript(recording_files: List[Dict]) -> Optional[Dict]:
     """Check for audio transcript files."""
     if not recording_files:
         return None
-    
+
     for file in recording_files:
         rec_type = (file.get('recording_type') or '').lower()
         file_type = (file.get('file_type') or '').lower()
-        
+
         if 'audio_transcript' in rec_type or 'transcript' in rec_type:
             return file
         if file_type in ['vtt', 'txt']:
@@ -499,12 +499,12 @@ def has_audio_files(recording_files: List[Dict]) -> Optional[Dict]:
     """Check for audio files."""
     if not recording_files:
         return None
-    
+
     for file in recording_files:
         rec_type = file.get('recording_type', '')
         file_type = (file.get('file_type') or '').lower()
         file_size = file.get('file_size', 0)
-        
+
         if rec_type == 'audio_only':
             return file
         if file_type in ['m4a', 'mp3', 'wav', 'aac', 'ogg']:
@@ -519,21 +519,21 @@ def clean_vtt_transcript(content: str) -> str:
     """Clean VTT transcript format."""
     if 'WEBVTT' not in content and '-->' not in content:
         return content
-    
+
     lines = content.split('\n')
     text_lines = []
-    
+
     for line in lines:
         trimmed = line.strip()
-        if (trimmed and 
-            not trimmed.startswith('WEBVTT') and 
-            '-->' not in trimmed and 
+        if (trimmed and
+            not trimmed.startswith('WEBVTT') and
+            '-->' not in trimmed and
             not trimmed.isdigit() and
             not trimmed.startswith('NOTE') and
             not trimmed.startswith('Kind:') and
             not trimmed.startswith('Language:')):
             text_lines.append(trimmed)
-    
+
     return ' '.join(text_lines).strip()
 
 
@@ -545,11 +545,11 @@ def fetch_zoom_recordings(teacher_email: str, date: str) -> Dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="ZOOM_ACCESS_TOKEN not configured. Please set it in .env file."
         )
-    
+
     url = f"{ZOOM_API_BASE}/users/{teacher_email}/recordings"
     params = {'from': date, 'to': date}
     headers = {'Authorization': f'Bearer {token}'}
-    
+
     try:
         response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
@@ -567,25 +567,25 @@ def download_zoom_file(download_url: str, response_format: str = 'text'):
     token = get_zoom_token()
     if not token:
         raise ValueError("ZOOM_ACCESS_TOKEN not configured")
-    
+
     headers = {
         'Authorization': f'Bearer {token}',
         'User-Agent': 'lesson-content-extractor/1.0'
     }
-    
+
     response = requests.get(download_url, headers=headers, timeout=300)
     response.raise_for_status()
-    
+
     return response.text if response_format == 'text' else response.content
 
 def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
     """Transcribe audio file using AssemblyAI."""
     if not ASSEMBLYAI_API_KEY:
         raise ValueError("ASSEMBLYAI_API_KEY not configured")
-    
+
     try:
         logger.info("Starting AssemblyAI transcription...")
-        
+
         # Configure transcription settings
         config = aai.TranscriptionConfig(
             language_code="en",  # Change if needed
@@ -593,18 +593,18 @@ def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
             format_text=True,
             speaker_labels=True  # Enable speaker diarization for Teacher/Student labels
         )
-        
+
         transcriber = aai.Transcriber(config=config)
-        
+
         # Transcribe from URL (AssemblyAI will download the file)
         transcript = transcriber.transcribe(audio_url)
-        
+
         # Wait for transcription to complete
         if transcript.status == aai.TranscriptStatus.error:
             raise Exception(f"Transcription failed: {transcript.error}")
-        
+
         logger.info(f"Transcription completed ({len(transcript.text)} characters)")
-        
+
         return {
             'text': transcript.text,
             'status': 'completed',
@@ -612,32 +612,32 @@ def transcribe_audio_with_assemblyai(audio_url: str) -> Dict:
             'confidence': getattr(transcript, 'confidence', None),
             'words_count': len(transcript.words) if transcript.words else 0
         }
-        
+
     except Exception as e:
         logger.error(f"AssemblyAI transcription error: {e}")
         raise Exception(f"Transcription failed: {str(e)}")
 
-        
+
 def process_recording_background(recording: Dict, user_params: Dict):
     """Background task to process a single recording."""
     try:
         logger.info(f" Processing recording: {recording['meeting_id']}")
-        
+
         # Download transcript from Zoom
         if recording['processing_type'] == 'TRANSCRIPT_DOWNLOAD':
             transcript_content = download_zoom_file(
-                recording['target_file']['download_url'], 
+                recording['target_file']['download_url'],
                 response_format='text'
             )
             clean_transcript = clean_vtt_transcript(transcript_content)
-            
+
             if len(clean_transcript) < 10:
                 clean_transcript = f"Error: Transcript appears empty.\n\nRaw: {transcript_content}"
-            
+
             meeting_date = datetime.fromisoformat(
                 recording['start_time'].replace('Z', '+00:00')
             ).strftime('%Y-%m-%d')
-            
+
             result = {
                 **recording,
                 **user_params,
@@ -649,35 +649,35 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 'transcription_status': 'completed',
                 'transcription_completed_at': utc_now_iso()
             }
-        
+
         # Audio transcription with AssemblyAI
         elif recording['processing_type'] == 'AUDIO_TRANSCRIPTION':
             if not ASSEMBLYAI_API_KEY:
                 logger.error("AssemblyAI API key not configured")
                 return
-            
+
             logger.info(f"Starting audio transcription for meeting {recording['meeting_id']}")
-            
+
             # Get audio file download URL (with Zoom token)
             audio_url = recording['target_file']['download_url']
-            
+
             # Download audio file first (AssemblyAI needs accessible URL or file upload)
             audio_content = download_zoom_file(audio_url, response_format='binary')
-            
+
             # Save temporarily
             import tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix='.m4a') as tmp_file:
                 tmp_file.write(audio_content)
                 tmp_audio_path = tmp_file.name
-            
+
             try:
                 # Transcribe with AssemblyAI
                 transcription_result = transcribe_audio_with_assemblyai(tmp_audio_path)
-                
+
                 meeting_date = datetime.fromisoformat(
                     recording['start_time'].replace('Z', '+00:00')
                 ).strftime('%Y-%m-%d')
-                
+
                 result = {
                     **recording,
                     **user_params,
@@ -691,19 +691,19 @@ def process_recording_background(recording: Dict, user_params: Dict):
                     'audio_duration_seconds': transcription_result.get('duration'),
                     'transcription_completed_at': utc_now_iso()
                 }
-                
+
                 logger.info(f"Audio transcribed successfully ({len(transcription_result['text'])} chars)")
-                
+
             finally:
                 # Clean up temp file
                 import os
                 if os.path.exists(tmp_audio_path):
                     os.remove(tmp_audio_path)
-        
+
         else:
             logger.warning(f"Unknown processing type: {recording.get('processing_type')}")
             return
-        
+
         # Store in Supabase
         if supabase_client.client:
             supabase_data = {
@@ -750,7 +750,7 @@ def process_recording_background(recording: Dict, user_params: Dict):
                 logger.error(
                     f"Auto-processing failed for Zoom summary {zoom_summary_id}: {auto_err}"
                 )
-        
+
     except Exception as e:
         logger.error(f"Error processing recording {recording.get('meeting_id')}: {e}")
 
@@ -759,7 +759,7 @@ class TranscriptInput(BaseModel):
     """Single transcript input"""
     transcript: str = Field(..., min_length=10, description="Lesson transcript text")
     lesson_number: int = Field(..., ge=1, description="Lesson number (1-based)")
-    
+
     @field_validator('transcript')
     @classmethod
     def validate_transcript(cls, v):
@@ -783,7 +783,7 @@ class ZoomTranscriptInput(BaseModel):
     start_time: Optional[str] = Field(None, description="Start time filter in HH:MM format (optional)")
     end_time: Optional[str] = Field(None, description="End time filter in HH:MM format (optional)")
     lesson_number: Optional[int] = Field(1, ge=1, description="Lesson number (defaults to 1)")
-    
+
     @field_validator('date')
     @classmethod
     def validate_date(cls, v):
@@ -905,9 +905,9 @@ async def health_check():
             mysql_status = "connected"
         except:
             mysql_status = "error"
-    
+
     supabase_status = supabase_client.health_check()
-    
+
     return {
         "status": "healthy",
         "timestamp": utc_now_iso(),
@@ -923,11 +923,11 @@ async def health_check():
 async def process_single_lesson(input_data: TranscriptInput):
     """
     Process a single lesson transcript and return structured exercises
-    
+
     **Parameters:**
     - transcript: The lesson transcript text (minimum 10 characters)
     - lesson_number: Lesson identifier (positive integer)
-    
+
     **Returns:**
     - Structured exercises (fill-in-blank, flashcards, spelling)
     - Quality validation results
@@ -936,19 +936,19 @@ async def process_single_lesson(input_data: TranscriptInput):
     try:
         start_time = utc_now()
         logger.info(f"Processing lesson {input_data.lesson_number}")
-        
+
         # Process the lesson
         result = processor.process_lesson(
             input_data.transcript,
             input_data.lesson_number
         )
-        
+
         # Calculate total exercises
         total = len(result['fill_in_blank']) + len(result['flashcards']) + len(result['spelling'])
-        
+
         # Check quality
         quality_passed = 8 <= total <= 12
-        
+
         # Build response
         lesson_data = LessonExercises(
             lesson_number=input_data.lesson_number,
@@ -958,12 +958,12 @@ async def process_single_lesson(input_data: TranscriptInput):
             total_exercises=total,
             quality_passed=quality_passed
         )
-        
+
         end_time = utc_now()
         processing_time = (end_time - start_time).total_seconds()
-        
+
         logger.info(f"Lesson {input_data.lesson_number} processed successfully in {processing_time:.2f}s")
-        
+
         return ProcessingResponse(
             success=True,
             message=f"Lesson {input_data.lesson_number} processed successfully",
@@ -971,7 +971,7 @@ async def process_single_lesson(input_data: TranscriptInput):
             processing_time_seconds=round(processing_time, 2),
             timestamp=end_time.isoformat()
         )
-        
+
     except Exception as e:
         logger.error(f"Error processing lesson {input_data.lesson_number}: {str(e)}")
         raise HTTPException(
@@ -984,14 +984,14 @@ async def process_single_lesson(input_data: TranscriptInput):
 async def process_zoom_lesson(input_data: ZoomTranscriptInput):
     """
     Fetch Zoom transcript from Supabase and process into exercises
-    
+
     **Parameters:**
     - user_id: User identifier
-    - teacher_id: Teacher identifier  
+    - teacher_id: Teacher identifier
     - class_id: Class identifier
     - date: Meeting date in YYYY-MM-DD format
     - lesson_number: Optional lesson number (defaults to 1)
-    
+
     **Returns:**
     - Structured exercises (fill-in-blank, flashcards, spelling)
     - Zoom meeting metadata
@@ -1003,7 +1003,7 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             f"Processing Zoom lesson: user={input_data.user_id}, "
             f"teacher={input_data.teacher_id}, class={input_data.class_id}, date={input_data.date}"
         )
-        
+
         # Fetch transcript from Supabase
         transcript_data = supabase_client.fetch_transcript(
             user_id=input_data.user_id,
@@ -1014,30 +1014,30 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             start_time=input_data.start_time,
             end_time=input_data.end_time
         )
-        
+
         if not transcript_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No transcript found for the specified parameters. "
                        f"Please ensure the Zoom meeting was recorded and processed."
             )
-        
+
         # Extract transcript text
         transcript_text = transcript_data.get('transcript', '')
-        
+
         if not transcript_text or len(transcript_text.strip()) < 10:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Transcript is empty or too short to process"
             )
-        
+
         logger.info(f"Transcript fetched successfully (length: {len(transcript_text)} chars)")
-        
+
         # Truncate very long transcripts to prevent timeout
         if len(transcript_text) > 5000:
             logger.warning(f"Transcript too long ({len(transcript_text)} chars), truncating to 3000 chars")
             transcript_text = transcript_text[:3000] + "..."
-        
+
         pipeline_result = process_lesson_pipeline(
             transcript_text=transcript_text,
             lesson_number=input_data.lesson_number,
@@ -1064,7 +1064,7 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             "transcript_length": transcript_data.get('transcript_length'),
             "transcription_service": transcript_data.get('transcription_service')
         }
-        
+
         end_time = utc_now()
         processing_time = (end_time - start_time).total_seconds()
 
@@ -1072,7 +1072,7 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             f"Zoom lesson processed successfully in {processing_time:.2f}s "
             f"({lesson_data.total_exercises} exercises generated)"
         )
-        
+
         return ZoomProcessingResponse(
             success=True,
             message=(
@@ -1084,7 +1084,7 @@ async def process_zoom_lesson(input_data: ZoomTranscriptInput):
             processing_time_seconds=round(processing_time, 2),
             timestamp=end_time.isoformat()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1104,38 +1104,38 @@ async def get_transcript(
 ):
     """
     Get raw transcript from Supabase without processing
-    
+
     **Parameters:**
     - user_id: User identifier
     - teacher_id: Teacher identifier
     - class_id: Class identifier
     - date: Meeting date in YYYY-MM-DD format
-    
+
     **Returns:**
     - Raw transcript data from Supabase
     """
     try:
         logger.info(f"Fetching transcript: user={user_id}, teacher={teacher_id}, class={class_id}, date={date}")
-        
+
         transcript_data = supabase_client.fetch_transcript(
             user_id=user_id,
             teacher_id=teacher_id,
             class_id=class_id,
             date=date
         )
-        
+
         if not transcript_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No transcript found for the specified parameters."
             )
-        
+
         return {
             "success": True,
             "data": transcript_data,
             'timestamp': utc_now_iso()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1161,7 +1161,7 @@ class ZoomRecordingInput(BaseModel):
 async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, background_tasks: BackgroundTasks):
     """
     Fetch Zoom recordings and process them in background
-    
+
     **Parameters:**
     - teacher_email: Teacher's Zoom email
     - user_id: User identifier
@@ -1170,23 +1170,23 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
     - date: Meeting date in YYYY-MM-DD format
     - start_time: Optional start time filter (HH:MM)
     - end_time: Optional end time filter (HH:MM)
-    
+
     **Returns:**
     - Status of recording fetch and processing
     """
     try:
         logger.info(f"Fetching Zoom recordings for {input_data.teacher_email} on {input_data.date}")
-        
+
         # Validate time format
         formatted_start_time = validate_time(input_data.start_time) if input_data.start_time else None
         formatted_end_time = validate_time(input_data.end_time) if input_data.end_time else None
-        
+
         # Fetch Zoom recordings
         zoom_data = fetch_zoom_recordings(input_data.teacher_email, input_data.date)
         meetings = zoom_data.get('meetings', [])
-        
+
         logger.info(f"Found {len(meetings)} total meetings")
-        
+
         if not meetings:
             return {
                 "success": False,
@@ -1198,26 +1198,26 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
                 },
                 "timestamp": utc_now_iso()
             }
-        
+
         # Filter recordings
         filtered_recordings = []
         for meeting in meetings:
             if not meeting.get('recording_files'):
                 continue
-            
+
             meeting_date = datetime.fromisoformat(
                 meeting['start_time'].replace('Z', '+00:00')
             ).strftime('%Y-%m-%d')
-            
+
             if input_data.date and meeting_date != input_data.date:
                 continue
-            
+
             if not is_time_in_range(meeting['start_time'], formatted_start_time, formatted_end_time):
                 continue
-            
+
             transcript_file = has_audio_transcript(meeting['recording_files'])
             audio_file = has_audio_files(meeting['recording_files'])
-            
+
             if transcript_file or audio_file:
                 meeting_time = get_utc_time_from_iso(meeting['start_time'])
                 filtered_recordings.append({
@@ -1229,9 +1229,9 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
                     'target_file': transcript_file or audio_file,
                     'files': meeting['recording_files']
                 })
-        
+
         logger.info(f"Filtered to {len(filtered_recordings)} matching recordings")
-        
+
         if not filtered_recordings:
             return {
                 "success": False,
@@ -1245,7 +1245,7 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
                 },
                 "timestamp": utc_now_iso()
             }
-        
+
         # Process recordings in background
         user_params = {
             'teacher_email': input_data.teacher_email,
@@ -1256,10 +1256,10 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
             'start_time': formatted_start_time,
             'end_time': formatted_end_time
         }
-        
+
         for recording in filtered_recordings:
             background_tasks.add_task(process_recording_background, recording, user_params)
-        
+
         return {
             "success": True,
             "message": "Zoom recordings found, processing started in background",
@@ -1285,7 +1285,7 @@ async def fetch_zoom_recordings_endpoint(input_data: ZoomRecordingInput, backgro
             },
             "timestamp": utc_now_iso()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1303,19 +1303,19 @@ async def get_exercises(
 ):
     """
     Get exercises for a class (for backend team to import)
-    
+
     **Parameters:**
     - class_id: Class identifier (required)
     - user_id: User identifier (optional filter)
-    
+
     **Returns:**
     - List of exercise sets with flashcards, fill-in-blank, and spelling
     """
     try:
         logger.info(f"Retrieving exercises: class={class_id}, user={user_id}")
-        
+
         exercises = supabase_client.get_exercises(class_id=class_id, user_id=user_id)
-        
+
         if not exercises:
             return {
                 "success": True,
@@ -1324,7 +1324,7 @@ async def get_exercises(
                 "count": 0,
                 "timestamp": utc_now_iso()
             }
-        
+
         return {
             "success": True,
             "message": f"Retrieved {len(exercises)} exercise set(s)",
@@ -1332,7 +1332,7 @@ async def get_exercises(
             "count": len(exercises),
             "timestamp": utc_now_iso()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1347,10 +1347,10 @@ async def get_exercises(
 async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
     """
     Process multiple lesson transcripts in batch
-    
+
     **Parameters:**
     - transcripts: List of transcript objects (1-10 lessons)
-    
+
     **Returns:**
     - Structured exercises for all lessons
     - Aggregated processing metadata
@@ -1358,19 +1358,19 @@ async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
     try:
         start_time = utc_now()
         logger.info(f"Processing batch of {len(input_data.transcripts)} lessons")
-        
+
         lessons_data = []
-        
+
         for transcript_input in input_data.transcripts:
             # Process each lesson
             result = processor.process_lesson(
                 transcript_input.transcript,
                 transcript_input.lesson_number
             )
-            
+
             total = len(result['fill_in_blank']) + len(result['flashcards']) + len(result['spelling'])
             quality_passed = 8 <= total <= 12
-            
+
             lesson_data = LessonExercises(
                 lesson_number=transcript_input.lesson_number,
                 fill_in_blank=result['fill_in_blank'],
@@ -1380,12 +1380,12 @@ async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
                 quality_passed=quality_passed
             )
             lessons_data.append(lesson_data)
-        
+
         end_time = utc_now()
         processing_time = (end_time - start_time).total_seconds()
-        
+
         logger.info(f"Batch processing completed in {processing_time:.2f}s")
-        
+
         return ProcessingResponse(
             success=True,
             message=f"Successfully processed {len(lessons_data)} lessons",
@@ -1393,7 +1393,7 @@ async def process_multiple_lessons(input_data: MultipleTranscriptsInput):
             processing_time_seconds=round(processing_time, 2),
             timestamp=end_time.isoformat()
         )
-        
+
     except Exception as e:
         logger.error(f"Error in batch processing: {str(e)}")
         raise HTTPException(
@@ -1444,11 +1444,11 @@ async def create_word_list(request: Request, user_id: str, data: dict):
             list_id, user_id, data.get('class_id', 'default'),
             data.get('name'), data.get('description'), utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[WORD_LISTS] Created list {list_id} for user {user_id}")
         return {"id": list_id, "message": "Word list created successfully"}
-        
+
     except Exception as e:
         logger.error(f"Error creating word list: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1465,12 +1465,12 @@ async def get_word_list(request: Request, list_id: str, user_id: str):
             WHERE id = %s AND user_id = %s
         """
         word_list = execute_query(query, (list_id, user_id), fetch_one=True)
-        
+
         if not word_list:
             raise HTTPException(status_code=404, detail="Word list not found")
-            
+
         return word_list
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1486,39 +1486,39 @@ async def update_word_list(request: Request, list_id: str, user_id: str, data: d
         # Check if list exists and belongs to user
         check_query = "SELECT id FROM word_lists WHERE id = %s AND user_id = %s"
         existing = execute_query(check_query, (list_id, user_id), fetch_one=True)
-        
+
         if not existing:
             raise HTTPException(status_code=404, detail="Word list not found")
-        
+
         # Update the list
         update_fields = []
         params = []
-        
+
         if 'name' in data:
             update_fields.append("name = %s")
             params.append(data['name'])
         if 'description' in data:
             update_fields.append("description = %s")
             params.append(data['description'])
-            
+
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields to update")
-            
+
         update_fields.append("updated_at = %s")
         params.append(utc_now_iso())
         params.append(list_id)
         params.append(user_id)
-        
+
         query = f"""
-            UPDATE word_lists 
+            UPDATE word_lists
             SET {', '.join(update_fields)}
             WHERE id = %s AND user_id = %s
         """
-        
+
         execute_query(query, tuple(params), fetch_all=False)
         logger.info(f"[WORD_LISTS] Updated list {list_id} for user {user_id}")
         return {"message": "Word list updated successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1534,17 +1534,17 @@ async def delete_word_list(request: Request, list_id: str, user_id: str):
         # Delete words first (foreign key constraint)
         delete_words_query = "DELETE FROM words WHERE word_list_id = %s"
         execute_query(delete_words_query, (list_id,), fetch_all=False)
-        
+
         # Delete the list
         delete_list_query = "DELETE FROM word_lists WHERE id = %s AND user_id = %s"
         result = execute_query(delete_list_query, (list_id, user_id), fetch_all=False)
-        
+
         if result == 0:
             raise HTTPException(status_code=404, detail="Word list not found")
-            
+
         logger.info(f"[WORD_LISTS] Deleted list {list_id} for user {user_id}")
         return {"message": "Word list deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1560,25 +1560,25 @@ async def toggle_favorite(request: Request, list_id: str, user_id: str):
         # Check if list exists
         check_query = "SELECT id FROM word_lists WHERE id = %s AND user_id = %s"
         existing = execute_query(check_query, (list_id, user_id), fetch_one=True)
-        
+
         if not existing:
             raise HTTPException(status_code=404, detail="Word list not found")
-        
+
         # Toggle favorite
         toggle_query = """
-            UPDATE word_lists 
+            UPDATE word_lists
             SET is_favorite = NOT is_favorite, updated_at = %s
             WHERE id = %s AND user_id = %s
         """
         execute_query(toggle_query, (utc_now_iso(), list_id, user_id), fetch_all=False)
-        
+
         # Get updated status
         status_query = "SELECT is_favorite FROM word_lists WHERE id = %s"
         status = execute_query(status_query, (list_id,), fetch_one=True)
-        
+
         logger.info(f"[WORD_LISTS] Toggled favorite for list {list_id}")
         return {"is_favorite": status['is_favorite']}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1594,10 +1594,10 @@ async def add_word_to_list(request: Request, list_id: str, user_id: str, data: d
         # Check if list exists
         check_query = "SELECT id FROM word_lists WHERE id = %s AND user_id = %s"
         existing = execute_query(check_query, (list_id, user_id), fetch_one=True)
-        
+
         if not existing:
             raise HTTPException(status_code=404, detail="Word list not found")
-        
+
         # Add word
         query = """
             INSERT INTO words (id, word_list_id, word, translation, notes, created_at)
@@ -1605,14 +1605,14 @@ async def add_word_to_list(request: Request, list_id: str, user_id: str, data: d
         """
         word_id = str(uuid.uuid4())
         params = [
-            word_id, list_id, data.get('word'), 
+            word_id, list_id, data.get('word'),
             data.get('translation'), data.get('notes'), utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[WORD_LISTS] Added word {word_id} to list {list_id}")
         return {"id": word_id, "message": "Word added successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1632,14 +1632,14 @@ async def update_word_in_list(request: Request, list_id: str, word_id: str, user
             WHERE w.id = %s AND w.word_list_id = %s AND wl.user_id = %s
         """
         existing = execute_query(check_query, (word_id, list_id, user_id), fetch_one=True)
-        
+
         if not existing:
             raise HTTPException(status_code=404, detail="Word not found")
-        
+
         # Update the word
         update_fields = []
         params = []
-        
+
         if 'word' in data:
             update_fields.append("word = %s")
             params.append(data['word'])
@@ -1649,24 +1649,24 @@ async def update_word_in_list(request: Request, list_id: str, word_id: str, user
         if 'notes' in data:
             update_fields.append("notes = %s")
             params.append(data['notes'])
-            
+
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields to update")
-            
+
         update_fields.append("updated_at = %s")
         params.append(utc_now_iso())
         params.append(word_id)
-        
+
         query = f"""
-            UPDATE words 
+            UPDATE words
             SET {', '.join(update_fields)}
             WHERE id = %s
         """
-        
+
         execute_query(query, tuple(params), fetch_all=False)
         logger.info(f"[WORD_LISTS] Updated word {word_id}")
         return {"message": "Word updated successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1686,20 +1686,20 @@ async def delete_word_from_list(request: Request, list_id: str, word_id: str, us
             WHERE w.id = %s AND w.word_list_id = %s AND wl.user_id = %s
         """
         existing = execute_query(check_query, (word_id, list_id, user_id), fetch_one=True)
-        
+
         if not existing:
             raise HTTPException(status_code=404, detail="Word not found")
-        
+
         # Delete the word
         delete_query = "DELETE FROM words WHERE id = %s"
         result = execute_query(delete_query, (word_id,), fetch_all=False)
-        
+
         if result == 0:
             raise HTTPException(status_code=404, detail="Word not found")
-            
+
         logger.info(f"[WORD_LISTS] Deleted word {word_id} from list {list_id}")
         return {"message": "Word deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1721,12 +1721,12 @@ async def get_words_from_list(
         # Check if list exists and belongs to user
         check_query = "SELECT id FROM word_lists WHERE id = %s AND user_id = %s"
         existing = execute_query(check_query, (list_id, user_id), fetch_one=True)
-        
+
         if not existing:
             raise HTTPException(status_code=404, detail="Word list not found")
-        
+
         query = """
-            SELECT id, word, translation, notes, difficulty, 
+            SELECT id, word, translation, notes, difficulty,
                    pronunciation_audio_url, created_at, updated_at
             FROM words
             WHERE word_list_id = %s
@@ -1735,10 +1735,10 @@ async def get_words_from_list(
         """
         offset = (page - 1) * limit
         words = execute_query(query, (list_id, limit, offset))
-        
+
         logger.info(f"[WORD_LISTS] Retrieved {len(words)} words for list {list_id}")
         return {"words": words}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1757,7 +1757,7 @@ async def get_word_lists(
     """Get flashcard lists from MySQL"""
     try:
         query = """
-            SELECT id, user_id, class_id, name, description, 
+            SELECT id, user_id, class_id, name, description,
                    word_count, is_favorite, created_at, updated_at
             FROM word_lists
             WHERE user_id = %s AND class_id = %s
@@ -1765,15 +1765,15 @@ async def get_word_lists(
             LIMIT %s
         """
         lists = execute_query(query, (user_id, class_id, limit))
-        
+
         for lst in lists:
             if lst.get('created_at'):
                 lst['created_at'] = lst['created_at'].isoformat()
             if lst.get('updated_at'):
                 lst['updated_at'] = lst['updated_at'].isoformat()
-        
+
         return {"success": True, "count": len(lists), "data": lists}
-        
+
     except Exception as e:
         logger.error(f"Error fetching word lists: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1785,21 +1785,21 @@ async def get_words(request: Request, list_id: int):
     """Get words for a list"""
     try:
         query = """
-            SELECT id, list_id, word, translation, example_sentence, 
+            SELECT id, list_id, word, translation, example_sentence,
                    difficulty, is_favorite, created_at
             FROM words
             WHERE list_id = %s
             ORDER BY id
         """
         words = execute_query(query, (list_id,))
-        
+
         for word in words:
             if word.get('created_at'):
                 word['created_at'] = word['created_at'].isoformat()
             word['is_favorite'] = bool(word.get('is_favorite', False))
-        
+
         return {"success": True, "count": len(words), "words": words}
-        
+
     except Exception as e:
         logger.error(f"Error fetching words: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1811,18 +1811,18 @@ async def get_flashcard_session(request: Request, session_id: str, user_id: str)
     """Get flashcard session details"""
     try:
         query = """
-            SELECT id, user_id, game_type, class_id, item_ids, status, 
+            SELECT id, user_id, game_type, class_id, item_ids, status,
                    started_at, completed_at, metadata
             FROM game_sessions
             WHERE id = %s AND user_id = %s AND game_type = 'flashcards'
         """
         session = execute_query(query, (session_id, user_id), fetch_one=True)
-        
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return session
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1837,7 +1837,7 @@ async def get_flashcard_stats(request: Request, user_id: str):
     try:
         # Get overall stats
         stats_query = """
-            SELECT 
+            SELECT
                 COUNT(*) as total_sessions,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_sessions,
                 AVG(final_score) as avg_score,
@@ -1847,7 +1847,7 @@ async def get_flashcard_stats(request: Request, user_id: str):
             WHERE user_id = %s AND game_type = 'flashcards'
         """
         stats = execute_query(stats_query, (user_id,), fetch_one=True)
-        
+
         return {
             "totals": stats or {
                 "total_sessions": 0,
@@ -1857,7 +1857,7 @@ async def get_flashcard_stats(request: Request, user_id: str):
                 "total_incorrect": 0
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Error getting flashcard stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1869,18 +1869,18 @@ async def get_spelling_session(request: Request, session_id: str, user_id: str):
     """Get spelling session details"""
     try:
         query = """
-            SELECT id, user_id, game_type, class_id, item_ids, status, 
+            SELECT id, user_id, game_type, class_id, item_ids, status,
                    started_at, completed_at, metadata
             FROM game_sessions
             WHERE id = %s AND user_id = %s AND game_type = 'spelling_bee'
         """
         session = execute_query(query, (session_id, user_id), fetch_one=True)
-        
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return session
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1899,16 +1899,16 @@ async def get_pronunciation(request: Request, word_id: str, user_id: str):
             WHERE id = %s
         """
         word = execute_query(query, (word_id,), fetch_one=True)
-        
+
         if not word:
             raise HTTPException(status_code=404, detail="Word not found")
-            
+
         return {
             "word": word['word'],
             "pronunciation_url": word.get('pronunciation_audio_url'),
             "message": "Pronunciation feature not yet implemented"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1926,25 +1926,25 @@ async def get_spelling_words(
     """Get spelling words from MySQL"""
     try:
         query = """
-            SELECT w.id, w.word, w.translation, w.example_sentence, 
+            SELECT w.id, w.word, w.translation, w.example_sentence,
                    w.difficulty, wl.name as list_name
             FROM words w
             JOIN word_lists wl ON w.word_list_id = wl.id
             WHERE wl.user_id = %s AND wl.class_id = %s
         """
         params = [user_id, class_id]
-        
+
         if difficulty:
             query += " AND w.difficulty = %s"
             params.append(difficulty)
-        
+
         query += " ORDER BY RAND() LIMIT %s"
         params.append(limit)
-        
+
         words = execute_query(query, tuple(params))
-        
+
         return {"success": True, "count": len(words), "words": words}
-        
+
     except Exception as e:
         logger.error(f"Error fetching spelling words: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1964,24 +1964,24 @@ async def get_cloze_lessons(
     """Get cloze lessons for a topic"""
     try:
         query = """
-            SELECT id, topic_id, title, description, difficulty, 
+            SELECT id, topic_id, title, description, difficulty,
                    item_count, created_at
             FROM cloze_lessons
             WHERE topic_id = %s
         """
         params = [topic_id]
-        
+
         if difficulty:
             query += " AND difficulty = %s"
             params.append(difficulty)
-            
+
         query += " ORDER BY title LIMIT %s"
         params.append(limit)
-        
+
         lessons = execute_query(query, tuple(params))
         logger.info(f"[CLOZE] Retrieved {len(lessons)} lessons for topic {topic_id}")
         return {"lessons": lessons}
-        
+
     except Exception as e:
         logger.error(f"Error fetching cloze lessons: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1993,18 +1993,18 @@ async def get_cloze_session(request: Request, session_id: str, user_id: str):
     """Get cloze session details"""
     try:
         query = """
-            SELECT id, user_id, game_type, class_id, item_ids, status, 
+            SELECT id, user_id, game_type, class_id, item_ids, status,
                    started_at, completed_at, metadata
             FROM game_sessions
             WHERE id = %s AND user_id = %s AND game_type = 'advanced_cloze'
         """
         session = execute_query(query, (session_id, user_id), fetch_one=True)
-        
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return session
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2018,7 +2018,7 @@ async def start_cloze_session(request: Request, data: SessionStartInput):
     """Start a cloze session"""
     try:
         query = """
-            INSERT INTO game_sessions (id, user_id, game_type, class_id, mode, 
+            INSERT INTO game_sessions (id, user_id, game_type, class_id, mode,
                                       reference_id, item_ids, status, started_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
@@ -2027,11 +2027,11 @@ async def start_cloze_session(request: Request, data: SessionStartInput):
             session_id, data.user_id, data.game_type, data.class_id,
             data.mode, data.reference_id, data.item_ids, 'active', utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[CLOZE] Started session {session_id} for user {data.user_id}")
         return {"id": session_id, "status": "active"}
-        
+
     except Exception as e:
         logger.error(f"Error starting cloze session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2043,7 +2043,7 @@ async def record_cloze_result(request: Request, session_id: str, user_id: str, d
     """Record cloze result"""
     try:
         query = """
-            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct, 
+            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct,
                                      attempts, time_spent_ms, metadata, created_at)
             VALUES (%s, %s, 'cloze', %s, %s, %s, %s, %s, %s)
         """
@@ -2053,11 +2053,11 @@ async def record_cloze_result(request: Request, session_id: str, user_id: str, d
             data.get('attempts', 1), data.get('time_spent_ms', 0),
             json.dumps(data.get('metadata')) if data.get('metadata') else None, utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[CLOZE] Recorded result for session {session_id}")
         return {"id": result_id, "message": "Result recorded"}
-        
+
     except Exception as e:
         logger.error(f"Error recording cloze result: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2069,8 +2069,8 @@ async def complete_cloze_session(request: Request, session_id: str, user_id: str
     """Complete cloze session"""
     try:
         query = """
-            UPDATE game_sessions 
-            SET status = 'completed', completed_at = %s, 
+            UPDATE game_sessions
+            SET status = 'completed', completed_at = %s,
                 final_score = %s, correct_count = %s, incorrect_count = %s
             WHERE id = %s AND user_id = %s
         """
@@ -2078,14 +2078,14 @@ async def complete_cloze_session(request: Request, session_id: str, user_id: str
             utc_now_iso(), data.final_score, data.correct_count,
             data.incorrect_count, session_id, user_id
         ]
-        
+
         result = execute_query(query, tuple(params), fetch_all=False)
         if result == 0:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         logger.info(f"[CLOZE] Completed session {session_id}")
         return {"message": "Session completed successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2104,16 +2104,16 @@ async def get_cloze_hint(request: Request, item_id: str, user_id: str):
             WHERE id = %s
         """
         item = execute_query(query, (item_id,), fetch_one=True)
-        
+
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-            
+
         return {
             "item_id": item_id,
             "hint": item.get('hint', 'No hint available'),
             "message": "Use this hint to help with the answer"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2133,7 +2133,7 @@ async def get_cloze_mistakes(
     try:
         offset = (page - 1) * limit
         query = """
-            SELECT um.id, um.item_id, um.item_type, um.user_answer, 
+            SELECT um.id, um.item_id, um.item_type, um.user_answer,
                    um.correct_answer, um.mistake_type, um.created_at,
                    ci.text_parts, ci.correct_answers
             FROM user_mistakes um
@@ -2143,13 +2143,13 @@ async def get_cloze_mistakes(
             LIMIT %s OFFSET %s
         """
         mistakes = execute_query(query, (user_id, limit, offset))
-        
+
         for m in mistakes:
             if m['created_at']:
                 m['created_at'] = m['created_at'].isoformat()
-        
+
         return {"success": True, "mistakes": mistakes}
-        
+
     except Exception as e:
         logger.error(f"Error fetching cloze mistakes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2166,24 +2166,24 @@ async def get_grammar_lessons(
     """Get grammar lessons for a category"""
     try:
         query = """
-            SELECT id, category_id, title, description, difficulty, 
+            SELECT id, category_id, title, description, difficulty,
                    question_count, created_at
             FROM grammar_lessons
             WHERE category_id = %s
         """
         params = [category_id]
-        
+
         if difficulty:
             query += " AND difficulty = %s"
             params.append(difficulty)
-            
+
         query += " ORDER BY title LIMIT %s"
         params.append(limit)
-        
+
         lessons = execute_query(query, tuple(params))
         logger.info(f"[GRAMMAR] Retrieved {len(lessons)} lessons for category {category_id}")
         return {"lessons": lessons}
-        
+
     except Exception as e:
         logger.error(f"Error fetching grammar lessons: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2195,18 +2195,18 @@ async def get_grammar_session(request: Request, session_id: str, user_id: str):
     """Get grammar session details"""
     try:
         query = """
-            SELECT id, user_id, game_type, class_id, item_ids, status, 
+            SELECT id, user_id, game_type, class_id, item_ids, status,
                    started_at, completed_at, metadata
             FROM game_sessions
             WHERE id = %s AND user_id = %s AND game_type = 'grammar_challenge'
         """
         session = execute_query(query, (session_id, user_id), fetch_one=True)
-        
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return session
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2220,7 +2220,7 @@ async def start_grammar_session(request: Request, data: SessionStartInput):
     """Start a grammar session"""
     try:
         query = """
-            INSERT INTO game_sessions (id, user_id, game_type, class_id, mode, 
+            INSERT INTO game_sessions (id, user_id, game_type, class_id, mode,
                                       reference_id, item_ids, status, started_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
@@ -2229,11 +2229,11 @@ async def start_grammar_session(request: Request, data: SessionStartInput):
             session_id, data.user_id, data.game_type, data.class_id,
             data.mode, data.reference_id, data.item_ids, 'active', utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[GRAMMAR] Started session {session_id} for user {data.user_id}")
         return {"id": session_id, "status": "active"}
-        
+
     except Exception as e:
         logger.error(f"Error starting grammar session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2245,7 +2245,7 @@ async def record_grammar_result(request: Request, session_id: str, user_id: str,
     """Record grammar result"""
     try:
         query = """
-            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct, 
+            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct,
                                      attempts, time_spent_ms, metadata, created_at)
             VALUES (%s, %s, 'grammar', %s, %s, %s, %s, %s, %s)
         """
@@ -2255,11 +2255,11 @@ async def record_grammar_result(request: Request, session_id: str, user_id: str,
             data.get('attempts', 1), data.get('time_spent_ms', 0),
             json.dumps(data.get('metadata')) if data.get('metadata') else None, utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[GRAMMAR] Recorded result for session {session_id}")
         return {"id": result_id, "message": "Result recorded"}
-        
+
     except Exception as e:
         logger.error(f"Error recording grammar result: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2272,7 +2272,7 @@ async def skip_grammar_question(request: Request, session_id: str, user_id: str,
     try:
         # Record as incorrect result
         query = """
-            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct, 
+            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct,
                                      attempts, time_spent_ms, metadata, created_at)
             VALUES (%s, %s, 'grammar', %s, %s, %s, %s, %s, %s)
         """
@@ -2281,11 +2281,11 @@ async def skip_grammar_question(request: Request, session_id: str, user_id: str,
             result_id, session_id, data.get('question_id', data.get('item_id')), False,
             0, 0, json.dumps({"skipped": True}), utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[GRAMMAR] Skipped question for session {session_id}")
         return {"id": result_id, "message": "Question skipped"}
-        
+
     except Exception as e:
         logger.error(f"Error skipping grammar question: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2297,8 +2297,8 @@ async def complete_grammar_session(request: Request, session_id: str, user_id: s
     """Complete grammar session"""
     try:
         query = """
-            UPDATE game_sessions 
-            SET status = 'completed', completed_at = %s, 
+            UPDATE game_sessions
+            SET status = 'completed', completed_at = %s,
                 final_score = %s, correct_count = %s, incorrect_count = %s
             WHERE id = %s AND user_id = %s
         """
@@ -2306,14 +2306,14 @@ async def complete_grammar_session(request: Request, session_id: str, user_id: s
             utc_now_iso(), data.final_score, data.correct_count,
             data.incorrect_count, session_id, user_id
         ]
-        
+
         result = execute_query(query, tuple(params), fetch_all=False)
         if result == 0:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         logger.info(f"[GRAMMAR] Completed session {session_id}")
         return {"message": "Session completed successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2332,16 +2332,16 @@ async def get_grammar_hint(request: Request, question_id: str, user_id: str):
             WHERE id = %s
         """
         question = execute_query(query, (question_id,), fetch_one=True)
-        
+
         if not question:
             raise HTTPException(status_code=404, detail="Question not found")
-            
+
         return {
             "question_id": question_id,
             "hint": question.get('hint', 'No hint available'),
             "explanation": question.get('explanation', 'No explanation available')
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2361,7 +2361,7 @@ async def get_grammar_mistakes(
     try:
         offset = (page - 1) * limit
         query = """
-            SELECT um.id, um.item_id, um.item_type, um.user_answer, 
+            SELECT um.id, um.item_id, um.item_type, um.user_answer,
                    um.correct_answer, um.mistake_type, um.created_at,
                    gq.question, gq.options, gq.correct_answer
             FROM user_mistakes um
@@ -2371,13 +2371,13 @@ async def get_grammar_mistakes(
             LIMIT %s OFFSET %s
         """
         mistakes = execute_query(query, (user_id, limit, offset))
-        
+
         for m in mistakes:
             if m['created_at']:
                 m['created_at'] = m['created_at'].isoformat()
-        
+
         return {"success": True, "mistakes": mistakes}
-        
+
     except Exception as e:
         logger.error(f"Error fetching grammar mistakes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2394,24 +2394,24 @@ async def get_sentence_lessons(
     """Get sentence lessons for a topic"""
     try:
         query = """
-            SELECT id, topic_id, title, description, difficulty, 
+            SELECT id, topic_id, title, description, difficulty,
                    item_count, created_at
             FROM sentence_lessons
             WHERE topic_id = %s
         """
         params = [topic_id]
-        
+
         if difficulty:
             query += " AND difficulty = %s"
             params.append(difficulty)
-            
+
         query += " ORDER BY title LIMIT %s"
         params.append(limit)
-        
+
         lessons = execute_query(query, tuple(params))
         logger.info(f"[SENTENCE] Retrieved {len(lessons)} lessons for topic {topic_id}")
         return {"lessons": lessons}
-        
+
     except Exception as e:
         logger.error(f"Error fetching sentence lessons: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2423,18 +2423,18 @@ async def get_sentence_session(request: Request, session_id: str, user_id: str):
     """Get sentence session details"""
     try:
         query = """
-            SELECT id, user_id, game_type, class_id, item_ids, status, 
+            SELECT id, user_id, game_type, class_id, item_ids, status,
                    started_at, completed_at, metadata
             FROM game_sessions
             WHERE id = %s AND user_id = %s AND game_type = 'sentence_builder'
         """
         session = execute_query(query, (session_id, user_id), fetch_one=True)
-        
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return session
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2448,7 +2448,7 @@ async def start_sentence_session(request: Request, data: SessionStartInput):
     """Start a sentence session"""
     try:
         query = """
-            INSERT INTO game_sessions (id, user_id, game_type, class_id, mode, 
+            INSERT INTO game_sessions (id, user_id, game_type, class_id, mode,
                                       reference_id, item_ids, status, started_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
@@ -2457,11 +2457,11 @@ async def start_sentence_session(request: Request, data: SessionStartInput):
             session_id, data.user_id, data.game_type, data.class_id,
             data.mode, data.reference_id, data.item_ids, 'active', utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[SENTENCE] Started session {session_id} for user {data.user_id}")
         return {"id": session_id, "status": "active"}
-        
+
     except Exception as e:
         logger.error(f"Error starting sentence session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2473,7 +2473,7 @@ async def record_sentence_result(request: Request, session_id: str, user_id: str
     """Record sentence result"""
     try:
         query = """
-            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct, 
+            INSERT INTO game_results (id, session_id, game_type, item_id, is_correct,
                                      attempts, time_spent_ms, metadata, created_at)
             VALUES (%s, %s, 'sentence', %s, %s, %s, %s, %s, %s)
         """
@@ -2483,11 +2483,11 @@ async def record_sentence_result(request: Request, session_id: str, user_id: str
             data.get('attempts', 1), data.get('time_spent_ms', 0),
             json.dumps(data.get('metadata')) if data.get('metadata') else None, utc_now_iso()
         ]
-        
+
         execute_query(query, params, fetch_all=False)
         logger.info(f"[SENTENCE] Recorded result for session {session_id}")
         return {"id": result_id, "message": "Result recorded"}
-        
+
     except Exception as e:
         logger.error(f"Error recording sentence result: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2499,8 +2499,8 @@ async def complete_sentence_session(request: Request, session_id: str, user_id: 
     """Complete sentence session"""
     try:
         query = """
-            UPDATE game_sessions 
-            SET status = 'completed', completed_at = %s, 
+            UPDATE game_sessions
+            SET status = 'completed', completed_at = %s,
                 final_score = %s, correct_count = %s, incorrect_count = %s
             WHERE id = %s AND user_id = %s
         """
@@ -2508,14 +2508,14 @@ async def complete_sentence_session(request: Request, session_id: str, user_id: 
             utc_now_iso(), data.final_score, data.correct_count,
             data.incorrect_count, session_id, user_id
         ]
-        
+
         result = execute_query(query, tuple(params), fetch_all=False)
         if result == 0:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         logger.info(f"[SENTENCE] Completed session {session_id}")
         return {"message": "Session completed successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2534,16 +2534,16 @@ async def get_sentence_hint(request: Request, item_id: str, user_id: str):
             WHERE id = %s
         """
         item = execute_query(query, (item_id,), fetch_one=True)
-        
+
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-            
+
         return {
             "item_id": item_id,
             "hint": item.get('hint', 'No hint available'),
             "accepted_sequences": item.get('accepted_sequences', [])
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2562,21 +2562,21 @@ async def get_sentence_tts(request: Request, item_id: str, user_id: str):
             WHERE id = %s
         """
         item = execute_query(query, (item_id,), fetch_one=True)
-        
+
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-            
+
         # Convert tokens back to sentence
         tokens = item.get('sentence_tokens', [])
         sentence = ' '.join(tokens)
-        
+
         return {
             "item_id": item_id,
             "sentence": sentence,
             "tts_url": item.get('tts_audio_url'),
             "message": "TTS feature not yet implemented"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2596,7 +2596,7 @@ async def get_sentence_mistakes(
     try:
         offset = (page - 1) * limit
         query = """
-            SELECT um.id, um.item_id, um.item_type, um.user_answer, 
+            SELECT um.id, um.item_id, um.item_type, um.user_answer,
                    um.correct_answer, um.mistake_type, um.created_at,
                    si.sentence_tokens, si.accepted_sequences
             FROM user_mistakes um
@@ -2606,13 +2606,13 @@ async def get_sentence_mistakes(
             LIMIT %s OFFSET %s
         """
         mistakes = execute_query(query, (user_id, limit, offset))
-        
+
         for m in mistakes:
             if m['created_at']:
                 m['created_at'] = m['created_at'].isoformat()
-        
+
         return {"success": True, "mistakes": mistakes}
-        
+
     except Exception as e:
         logger.error(f"Error fetching sentence mistakes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2625,7 +2625,7 @@ async def get_user_stats(request: Request, user_id: str):
     try:
         # Get overall stats
         stats_query = """
-            SELECT 
+            SELECT
                 game_type,
                 COUNT(*) as total_sessions,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_sessions,
@@ -2638,7 +2638,7 @@ async def get_user_stats(request: Request, user_id: str):
             GROUP BY game_type
         """
         game_stats = execute_query(stats_query, (user_id,))
-        
+
         # Get total mistakes
         mistakes_query = """
             SELECT COUNT(*) as total_mistakes
@@ -2646,14 +2646,14 @@ async def get_user_stats(request: Request, user_id: str):
             WHERE user_id = %s
         """
         mistakes_stats = execute_query(mistakes_query, (user_id,), fetch_one=True)
-        
+
         return {
             "user_id": user_id,
             "game_stats": game_stats or [],
             "total_mistakes": mistakes_stats['total_mistakes'] if mistakes_stats else 0,
             "generated_at": utc_now_iso()
         }
-        
+
     except Exception as e:
         logger.error(f"Error getting user stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2665,19 +2665,19 @@ async def get_session(request: Request, session_id: str, user_id: str):
     """Get any session details (universal endpoint)"""
     try:
         query = """
-            SELECT id, user_id, game_type, class_id, item_ids, status, 
-                   started_at, completed_at, final_score, correct_count, 
+            SELECT id, user_id, game_type, class_id, item_ids, status,
+                   started_at, completed_at, final_score, correct_count,
                    incorrect_count, metadata
             FROM game_sessions
             WHERE id = %s AND user_id = %s
         """
         session = execute_query(query, (session_id, user_id), fetch_one=True)
-        
+
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-            
+
         return session
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2697,12 +2697,12 @@ async def get_word_from_list(request: Request, list_id: str, word_id: str, user_
             WHERE w.id = %s AND w.word_list_id = %s AND wl.user_id = %s
         """
         word = execute_query(query, (word_id, list_id, user_id), fetch_one=True)
-        
+
         if not word:
             raise HTTPException(status_code=404, detail="Word not found")
-            
+
         return word
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2726,33 +2726,33 @@ async def get_cloze_items(
             WHERE 1=1
         """
         params = []
-        
+
         if topic_id:
             query += " AND topic_id = %s"
             params.append(topic_id)
-        
+
         if lesson_id:
             query += " AND lesson_id = %s"
             params.append(lesson_id)
-        
+
         if difficulty:
             query += " AND difficulty = %s"
             params.append(difficulty)
-        
+
         query += " ORDER BY created_at DESC LIMIT %s"
         params.append(limit)
-        
+
         items = execute_query(query, tuple(params))
-        
+
         for item in items:
             item['text_parts'] = json.loads(item['text_parts']) if isinstance(item['text_parts'], str) else item['text_parts']
             item['options'] = json.loads(item['options']) if isinstance(item['options'], str) else item['options']
             item['correct_answers'] = json.loads(item['correct_answers']) if isinstance(item['correct_answers'], str) else item['correct_answers']
             if item.get('created_at'):
                 item['created_at'] = item['created_at'].isoformat()
-        
+
         return {"success": True, "count": len(items), "items": items}
-        
+
     except Exception as e:
         logger.error(f"Error fetching cloze items: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2770,7 +2770,7 @@ async def get_cloze_topics(request: Request):
         """
         topics = execute_query(query)
         return {"success": True, "topics": topics}
-        
+
     except Exception as e:
         logger.error(f"Error fetching topics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2840,7 +2840,7 @@ async def get_grammar_categories(request: Request):
         """
         categories = execute_query(query)
         return {"success": True, "categories": categories}
-        
+
     except Exception as e:
         logger.error(f"Error fetching categories: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2868,24 +2868,24 @@ async def get_sentence_items(
             WHERE 1=1
         """
         params = []
-        
+
         if topic_id:
             query += " AND topic_id = %s"
             params.append(topic_id)
-        
+
         if lesson_id:
             query += " AND lesson_id = %s"
             params.append(lesson_id)
-        
+
         if difficulty:
             query += " AND difficulty = %s"
             params.append(difficulty)
-        
+
         query += " ORDER BY created_at DESC LIMIT %s"
         params.append(limit)
-        
+
         items = execute_query(query, tuple(params))
-        
+
         for item in items:
             item['sentence_tokens'] = json.loads(item['sentence_tokens']) if isinstance(item['sentence_tokens'], str) else item['sentence_tokens']
 
@@ -2905,9 +2905,9 @@ async def get_sentence_items(
 
             if item.get('created_at'):
                 item['created_at'] = item['created_at'].isoformat()
-        
+
         return {"success": True, "count": len(items), "items": items}
-        
+
     except Exception as e:
         logger.error(f"Error fetching sentence items: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2925,7 +2925,7 @@ async def get_sentence_topics(request: Request):
         """
         topics = execute_query(query)
         return {"success": True, "topics": topics}
-        
+
     except Exception as e:
         logger.error(f"Error fetching topics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2941,17 +2941,17 @@ async def start_session(session_data: SessionStartInput, request: Request):
     """Start a game session"""
     try:
         session_id = str(uuid.uuid4())
-        
+
         query = """
-            INSERT INTO game_sessions 
-            (id, user_id, game_type, class_id, mode, reference_id, 
+            INSERT INTO game_sessions
+            (id, user_id, game_type, class_id, mode, reference_id,
              progress_total, metadata)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """
-        
+
         metadata = json.dumps({"item_ids": session_data.item_ids})
         total = len(session_data.item_ids) if session_data.item_ids else 0
-        
+
         execute_query(query, (
             session_id,
             session_data.user_id,
@@ -2962,7 +2962,7 @@ async def start_session(session_data: SessionStartInput, request: Request):
             total,
             metadata
         ), fetch_all=False)
-        
+
         return {
             "id": session_id,
             "user_id": session_data.user_id,
@@ -2970,7 +2970,7 @@ async def start_session(session_data: SessionStartInput, request: Request):
             "total_items": total,
             "status": "active"
         }
-        
+
     except Exception as e:
         logger.error(f"Error starting session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2986,16 +2986,16 @@ async def record_result(
     """Record an answer"""
     try:
         result_id = str(uuid.uuid4())
-        
+
         query1 = """
-            INSERT INTO game_results 
+            INSERT INTO game_results
             (id, session_id, game_type, item_id, is_correct, attempts, time_spent_ms, metadata)
             SELECT %s, %s, game_type, %s, %s, %s, %s, %s
             FROM game_sessions WHERE id = %s
         """
-        
+
         metadata = json.dumps(result_data.metadata) if result_data.metadata else None
-        
+
         execute_query(query1, (
             result_id,
             session_id,
@@ -3006,7 +3006,7 @@ async def record_result(
             metadata,
             session_id
         ), fetch_all=False)
-        
+
         query2 = """
             UPDATE game_sessions
             SET progress_current = progress_current + 1,
@@ -3014,13 +3014,13 @@ async def record_result(
                 incorrect_count = incorrect_count + %s
             WHERE id = %s
         """
-        
+
         execute_query(query2, (
             1 if result_data.is_correct else 0,
             0 if result_data.is_correct else 1,
             session_id
         ), fetch_all=False)
-        
+
         if not result_data.is_correct:
             session_info = execute_query(
                 "SELECT user_id, game_type FROM game_sessions WHERE id = %s",
@@ -3048,9 +3048,9 @@ async def record_result(
                     None,
                     "incorrect"
                 ), fetch_all=False)
-        
+
         return {"success": True, "recorded": True}
-        
+
     except Exception as e:
         logger.error(f"Error recording result: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -3073,14 +3073,14 @@ async def complete_session(
                 incorrect_count = %s
             WHERE id = %s
         """
-        
+
         execute_query(query, (
             completion_data.final_score,
             completion_data.correct_count,
             completion_data.incorrect_count,
             session_id
         ), fetch_all=False)
-        
+
         return {
             "success": True,
             "session": {
@@ -3090,7 +3090,7 @@ async def complete_session(
                 "incorrect": completion_data.incorrect_count
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Error completing session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -3113,27 +3113,27 @@ async def get_progress(
             WHERE user_id = %s AND completed_at IS NOT NULL
         """
         params = [user_id]
-        
+
         if game_type:
             query += " AND game_type = %s"
             params.append(game_type)
-        
+
         query += " ORDER BY completed_at DESC LIMIT %s"
         params.append(limit)
-        
+
         sessions = execute_query(query, tuple(params))
-        
+
         for s in sessions:
             if s.get('started_at'):
                 s['started_at'] = s['started_at'].isoformat()
             if s.get('completed_at'):
                 s['completed_at'] = s['completed_at'].isoformat()
-        
+
         total_sessions = len(sessions)
         total_correct = sum(s.get('correct_count', 0) for s in sessions)
         total_incorrect = sum(s.get('incorrect_count', 0) for s in sessions)
         avg_score = sum(s.get('final_score', 0) for s in sessions) / total_sessions if total_sessions > 0 else 0
-        
+
         return {
             "success": True,
             "totals": {
@@ -3144,7 +3144,7 @@ async def get_progress(
             },
             "sessions": sessions
         }
-        
+
     except Exception as e:
         logger.error(f"Error fetching progress: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -3168,22 +3168,22 @@ async def get_mistakes(
             WHERE user_id = %s
         """
         params = [user_id]
-        
+
         if game_type:
             query += " AND game_type = %s"
             params.append(game_type)
-        
+
         query += " ORDER BY mistake_count DESC LIMIT %s"
         params.append(limit)
-        
+
         mistakes = execute_query(query, tuple(params))
-        
+
         for m in mistakes:
             if m.get('last_attempted_at'):
                 m['last_attempted_at'] = m['last_attempted_at'].isoformat()
-        
+
         return {"success": True, "mistakes": mistakes}
-        
+
     except Exception as e:
         logger.error(f"Error fetching mistakes: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
