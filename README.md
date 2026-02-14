@@ -15,7 +15,7 @@ Automatically transforms raw lesson transcripts into structured learning exercis
 
 ## 📊 Output
 
-Generates **3 CSV files per lesson**:   
+Generates **3 CSV files per lesson**:
 
 1. `lesson_N_fill_in_blank.csv` - Multiple choice exercises
 2. `lesson_N_flashcards.csv` - Vocabulary cards with translations
